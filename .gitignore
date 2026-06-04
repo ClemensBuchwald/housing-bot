@@ -1,0 +1,35 @@
+# Secrets
+.env
+*.key
+*.pem
+
+# Datenbank
+data/
+*.db
+*.sqlite
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Logs
+logs/
+*.log
+
+# Docker
+docker/data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# macOS
+.DS_Store
