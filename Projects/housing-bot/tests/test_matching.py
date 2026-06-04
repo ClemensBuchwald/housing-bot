@@ -1,0 +1,76 @@
+from datetime import date
+
+from src.config import load_criteria
+from src.matching import match
+from src.models import Listing
+
+
+def _listing(**kwargs) -> Listing:
+    defaults = dict(
+        id="test-1",
+        portal="mock",
+        url="https://example.com/1",
+        titel="Test Wohnung",
+        stadt="Berlin",
+        stadtteil="Prenzlauer Berg",
+        kaltmiete=900.0,
+        warmmiete=1100.0,
+        flaeche=60.0,
+        zimmer=2.0,
+        verfuegbar_ab=date(2026, 7, 1),
+        merkmale=["Balkon", "Haustiere erlaubt"],
+    )
+    defaults.update(kwargs)
+    return Listing(**defaults)
+
+
+def test_gutes_inserat_besteht():
+    criteria = load_criteria()
+    result = match(_listing(), criteria)
+    assert result.bestanden is True
+    assert result.score > 0
+
+
+def test_zu_teuer_abgelehnt():
+    criteria = load_criteria()
+    result = match(_listing(warmmiete=1800.0), criteria)
+    assert result.bestanden is False
+    assert "Preis" in result.ablehnungsgrund
+
+
+def test_zu_klein_abgelehnt():
+    criteria = load_criteria()
+    result = match(_listing(flaeche=30.0), criteria)
+    assert result.bestanden is False
+    assert "Fläche" in result.ablehnungsgrund
+
+
+def test_ausschlusswort_abgelehnt():
+    criteria = load_criteria()
+    result = match(_listing(titel="Zwischenmiete 2 Zimmer"), criteria)
+    assert result.bestanden is False
+    assert "Zwischenmiete" in result.ablehnungsgrund
+
+
+def test_preis_unbekannt_nicht_gefiltert():
+    criteria = load_criteria()
+    result = match(_listing(warmmiete=None, kaltmiete=None), criteria)
+    assert result.bestanden is True
+
+
+def test_score_bevorzugter_stadtteil():
+    criteria = load_criteria()
+    result = match(_listing(stadtteil="Prenzlauer Berg"), criteria)
+    assert result.score >= 20
+
+
+def test_score_nicht_bevorzugter_stadtteil():
+    criteria = load_criteria()
+    r_bevorzugt = match(_listing(stadtteil="Prenzlauer Berg"), criteria)
+    r_anderer = match(_listing(stadtteil="Spandau"), criteria)
+    assert r_bevorzugt.score > r_anderer.score
+
+
+def test_halbe_zimmer_aufgerundet():
+    l = _listing(zimmer=2.5)
+    assert l.zimmer_gerundet == 3
