@@ -1,0 +1,57 @@
+# Housing Bot — Suchkriterien
+# Alle Angaben sind inklusive Grenzen, sofern nicht anders angegeben.
+
+suche:
+  typ: wohnung          # wohnung | haus | wg-zimmer
+  modus: miete          # miete | kauf
+
+ort:
+  staedte:
+    - Berlin
+  stadtteile_bevorzugt:
+    - Prenzlauer Berg
+    - Friedrichshain
+    - Mitte
+    - Kreuzberg
+    - Neukölln
+    - Pankow
+  stadtteile_ausschluss: []
+  umkreis_km: 0         # 0 = nur genannte Stadtteile
+
+preis:
+  warmmiete_max: 1400   # EUR/Monat (Warmmiete inkl. NK)
+  kaltmiete_max: 1150   # EUR/Monat (als Fallback wenn Warm unbekannt)
+
+flaeche:
+  min_qm: 50
+  max_qm: 0             # 0 = kein Maximum
+
+zimmer:
+  min: 2
+  max: 3
+
+ausstattung:
+  balkon_oder_terrasse: bevorzugt   # bevorzugt | erforderlich | egal
+  einbaukueche: egal
+  keller: egal
+  aufzug: egal
+  barrierefrei: egal
+  haustiere_erlaubt: bevorzugt
+
+schluesselwoerter_ausschluss:
+  - Zwischenmiete
+  - befristet
+  - WG-geeignet
+
+einzug_ab: 2026-07-01   # ISO-Datum; leer = sofort
+
+portale:
+  immobilienscout24: true
+  immowelt: true
+  wg_gesucht: false
+  ebay_kleinanzeigen: true
+
+benachrichtigung:
+  telegram: true
+  email: false
+  nur_neue: true        # false = auch bereits gesehene Inserate erneut melden
