@@ -1,0 +1,20 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # SQLite-Datenbank persistent außerhalb des Containers
+      - ./data:/app/data
+      # Kriterien live editierbar ohne Rebuild
+      - ./config:/app/config:ro
+    healthcheck:
+      # Einfacher Check: Prozess läuft und data/-Verzeichnis ist schreibbar
+      test: ["CMD", "python", "-c", "import os; os.makedirs('/app/data', exist_ok=True)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

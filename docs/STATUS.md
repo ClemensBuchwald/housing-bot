@@ -16,16 +16,16 @@
 | IS24-Scraper (Stub, Phase 2) | 🔲 Stub vorhanden |
 | Haupt-Run-Loop (`main.py`) | ✅ abgeschlossen |
 | pytest-Tests (Matching) | ✅ abgeschlossen |
-| Docker Compose Setup | 🔲 offen |
-| Deployment auf Server | 🔲 offen |
+| Docker Compose Setup | ✅ abgeschlossen |
+| Deployment auf Server | 🔲 offen (explizite Freigabe erforderlich) |
 
 ## Nächste Schritte (Phase 1 abschließen)
 
-1. `.env` lokal befüllen und `python -m src.main --once --mock` testen
-2. Telegram-Bot einrichten, Token + Chat-ID in `.env` eintragen
-3. Ersten echten Testlauf mit Mock starten
-4. Docker Compose schreiben
-5. Auf Server deployen
+1. `.env` lokal befüllen (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`)
+2. `make run-mock` → Telegram-End-to-End-Test
+3. Docker-Image lokal bauen: `make docker-build` (braucht Docker)
+4. Docker-Mock-Test: `make docker-mock`
+5. Auf Server deployen (nach Freigabe)
 
 ## Phase 2 — Qualität
 
@@ -42,4 +42,5 @@
 
 - IS24-Scraper ist ein Stub — gibt leer zurück mit Warnung im Log.
 - Keine echten Portal-Requests in Phase 1 (außer Telegram).
-- Docker-Setup noch nicht vorhanden.
+- Docker-Image wurde noch nicht lokal gebaut (Docker nicht in Entwicklungsumgebung verfügbar).
+  Build und Smoke-Test auf einer Maschine mit Docker: `make docker-build && make docker-mock`.
