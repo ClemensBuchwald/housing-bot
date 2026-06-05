@@ -78,7 +78,8 @@ def _send_telegram(token: str, chat_id: str, text: str, retries: int = 3) -> boo
             resp = httpx.post(
                 url,
                 json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown",
-                      "disable_web_page_preview": True},
+                      # Link-Vorschau aktiv: Telegram zieht Objektbild/Titel vom Inseratslink
+                      "disable_web_page_preview": False},
                 timeout=10,
             )
             if resp.status_code == 429:
