@@ -14,7 +14,7 @@ from typing import Optional
 
 import httpx
 
-from src.evaluator import parse_mandate
+from src.evaluator import answer_question, classify_intent, parse_mandate
 from src.store import Store
 
 logger = logging.getLogger(__name__)
@@ -175,22 +175,45 @@ class TelegramHandler:
             self.send(chat_id, f"Unbekannter Befehl: {cmd}")
 
     def _handle_freetext(self, chat_id: str, text: str) -> None:
-        if len(text) < _MIN_MANDATE_LENGTH:
-            return  # Kurze Nachrichten still ignorieren
+        if len(text) < 3:
+            return  # Zu kurz, ignorieren
 
-        if not _is_mandate(text):
-            # Keine Wohnungssuche — kurze Orientierungshilfe
-            mandate = self.store.get_active_mandate(chat_id)
-            if mandate:
-                self.send(chat_id,
-                    "Ich bin ein Wohnungssuch-Bot. Aktuell suche ich aktiv.\n"
-                    "Befehle: /auftrag /pause /stop /status"
-                )
+        # Claude klassifiziert den Intent
+        intent = classify_intent(text)
+        logger.info("[%s] Intent: %s — '%s'", chat_id, intent, text[:60])
+
+        mandate = self.store.get_active_mandate(chat_id)
+
+        if intent == "FRAGE":
+            antwort = answer_question(text, mandate)
+            self.send(chat_id, antwort)
+            return
+
+        if intent == "BEFEHL":
+            # Steuerbefehle per Text erkennen
+            text_lower = text.lower()
+            if any(w in text_lower for w in ["stopp", "stop", "abbrech", "beend"]):
+                ok = self.store.set_mandate_state(chat_id, "stopped")
+                self.send(chat_id, "🛑 Suche gestoppt." if ok else "Kein aktiver Auftrag.")
+            elif any(w in text_lower for w in ["pause", "pausier"]):
+                ok = self.store.set_mandate_state(chat_id, "paused")
+                self.send(chat_id, "⏸ Suche pausiert." if ok else "Kein aktiver Auftrag.")
+            elif any(w in text_lower for w in ["weiter", "fortset", "aktivier", "start"]):
+                ok = self.store.set_mandate_state(chat_id, "active")
+                self.send(chat_id, "▶️ Suche fortgesetzt." if ok else "Kein pausierter Auftrag.")
             else:
-                self.send(chat_id,
-                    "Ich bin ein Wohnungssuch-Bot und warte auf einen Suchauftrag.\n"
-                    "Schreib z. B.: _3 Zimmer in Charlottenburg, max 1.400 € warm, Balkon_"
-                )
+                antwort = answer_question(text, mandate)
+                self.send(chat_id, antwort)
+            return
+
+        if intent == "SMALL_TALK":
+            antwort = answer_question(text, mandate)
+            self.send(chat_id, antwort)
+            return
+
+        # intent == "MANDAT" — Suchauftrag speichern
+        if len(text) < _MIN_MANDATE_LENGTH:
+            self.send(chat_id, "Bitte beschreibe deinen Suchauftrag etwas ausführlicher.")
             return
 
         self.send(chat_id, "⏳ Auftrag wird verstanden… einen Moment.")

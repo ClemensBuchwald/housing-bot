@@ -43,6 +43,18 @@ Extrahiere daraus ein strukturiertes Suchprofil als JSON. Felder:
 
 Antworte NUR mit gültigem JSON, ohne Erklärung."""
 
+_CLASSIFY_INTENT_PROMPT = """\
+Du bist der Housing-Bot-Assistent. Klassifiziere die folgende Nachricht in GENAU eine dieser Kategorien:
+
+- MANDAT: Der Nutzer möchte eine Wohnung suchen und gibt Suchkriterien an
+- FRAGE: Der Nutzer stellt eine Frage über den Bot, den aktuellen Auftrag oder den Status
+- BEFEHL: Der Nutzer möchte etwas steuern (pausieren, stoppen, fortsetzen, ändern)
+- SMALL_TALK: Allgemeine Konversation ohne Wohnungsbezug
+
+Nachricht: "{text}"
+
+Antworte NUR mit einem dieser Wörter: MANDAT, FRAGE, BEFEHL, SMALL_TALK"""
+
 _EVALUATE_LISTING_PROMPT = """\
 Du bist ein Wohnungs-Suchassistent. Bewerte das folgende Inserat gegen den Suchauftrag.
 
@@ -115,6 +127,59 @@ def _client() -> anthropic.Anthropic:
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY fehlt in .env")
     return anthropic.Anthropic(api_key=api_key)
+
+
+def classify_intent(text: str) -> str:
+    """Klassifiziert den Intent einer Nachricht: MANDAT | FRAGE | BEFEHL | SMALL_TALK"""
+    try:
+        client = _client()
+        msg = client.messages.create(
+            model=_MODEL,
+            max_tokens=10,
+            messages=[{
+                "role": "user",
+                "content": _CLASSIFY_INTENT_PROMPT.format(text=text),
+            }],
+        )
+        result = msg.content[0].text.strip().upper()
+        if result in ("MANDAT", "FRAGE", "BEFEHL", "SMALL_TALK"):
+            return result
+        return "SMALL_TALK"
+    except Exception as e:
+        logger.warning("Intent-Klassifikation fehlgeschlagen: %s", e)
+        return "SMALL_TALK"
+
+
+_ANSWER_QUESTION_PROMPT = """\
+Du bist der Housing-Bot-Assistent. Beantworte die Frage des Nutzers kurz und hilfreich.
+
+Aktueller Auftrag: {mandate}
+Frage: {question}
+
+Befehle die der Nutzer nutzen kann: /auftrag, /pause, /weiter, /stop, /status
+Antworte auf Deutsch, max 3 Sätze."""
+
+
+def answer_question(question: str, mandate: Optional[dict]) -> str:
+    """Beantwortet eine Frage über den Bot oder den aktuellen Auftrag."""
+    try:
+        client = _client()
+        mandate_info = "Kein aktiver Auftrag." if not mandate else mandate.get("raw_text", "Unbekannt")
+        msg = client.messages.create(
+            model=_MODEL,
+            max_tokens=200,
+            messages=[{
+                "role": "user",
+                "content": _ANSWER_QUESTION_PROMPT.format(
+                    mandate=mandate_info,
+                    question=question,
+                ),
+            }],
+        )
+        return msg.content[0].text.strip()
+    except Exception as e:
+        logger.warning("Fragen-Beantwortung fehlgeschlagen: %s", e)
+        return "Ich konnte deine Frage gerade nicht beantworten. Versuche /auftrag oder /status."
 
 
 def parse_mandate(raw_text: str) -> dict:
