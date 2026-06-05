@@ -68,16 +68,24 @@ def run_once(scrapers: List[BaseScraper], store: Store, notifier: NotificationSe
             if criteria.benachrichtigung.nur_neue and store.is_known(listing.id, listing.portal):
                 continue
 
-            store.mark_seen(listing.id, listing.portal)
+            # Vollständige Listing-Daten persistieren (Audit-Trail)
+            store.save_listing(listing)
 
             result = match(listing, criteria)
+
+            # Match-Ergebnis persistieren (inkl. Ablehnungsgrund)
+            store.save_match(result, geo_ok=True)
+
             if not result.bestanden:
-                logger.debug("Kein Match [%s]: %s", listing.id, result.ablehnungsgrund)
+                logger.debug(
+                    "Kein Match [%s] '%s': %s",
+                    listing.id, listing.titel, result.ablehnungsgrund,
+                )
                 continue
 
             logger.info(
-                "Match! [%s] '%s' — Score %d",
-                listing.id, listing.titel, result.score,
+                "Match! [%s] '%s' — Score %d — %s",
+                listing.id, listing.titel, result.score, listing.stadtteil or listing.stadt,
             )
             sent = notifier.send(result)
             if sent:
