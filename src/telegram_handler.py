@@ -24,7 +24,7 @@ class TelegramHandler:
         self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         self.store = store
-        self.agent = ConversationAgent(store, search_fn=search_fn)
+        self.agent = ConversationAgent(store, search_fn=search_fn, notify_fn=self.send)
         self._offset = 0
         self._base = _TG_API.format(token=self.token)
 

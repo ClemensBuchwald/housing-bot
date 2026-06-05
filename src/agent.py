@@ -46,7 +46,12 @@ Sobald ein Auftrag aktiv ist, durchsuchst du im Hintergrund Berliner Wohnungspor
 (landeseigene Gesellschaften, Genossenschaften, Vonovia/Deutsche Wohnen) und meldest \
 passende Treffer mit Vor- und Nachteilen samt Empfehlung.
 
-Halt dich kurz — das ist ein Telegram-Chat, kein Brief. Emojis sparsam, wenn sie passen."""
+Halt dich kurz — das ist ein Telegram-Chat, kein Brief. Emojis sparsam, wenn sie passen.
+
+WICHTIG bei `jetzt_angebote_suchen`: Die gefundenen Angebote werden bereits AUTOMATISCH
+als einzelne Nachrichten mit Links an den Chat gesendet. Zähl die Treffer NICHT selbst auf
+und gib KEINE Links wieder — sag nur kurz, wie viele Treffer du geschickt hast (z. B.
+"Hier sind 4 aktuelle Angebote ⤴" oder "Gerade keine passenden Angebote gefunden")."""
 
 
 TOOLS = [
@@ -119,6 +124,43 @@ TOOLS = [
 ]
 
 
+def format_treffer_block(t: dict) -> str:
+    """Ein Treffer = ein scanbarer Block mit klickbarem Klartext-Link (Telegram-Preview)."""
+    quelle = (t.get("quelle") or "").upper()
+    ort = t.get("ort") or "Berlin"
+    zi = t.get("zimmer")
+    fl = t.get("flaeche")
+    warm = t.get("warmmiete")
+    kalt = t.get("kaltmiete")
+
+    fakten = []
+    if zi:
+        fakten.append(f"{int(zi) if float(zi).is_integer() else zi} Zi")
+    if fl:
+        fakten.append(f"{int(fl) if float(fl).is_integer() else fl} m²")
+    fakten.append(ort)
+    zeile2 = " · ".join(fakten)
+
+    if warm:
+        preis = f"{int(warm)} € warm"
+    elif kalt:
+        preis = f"{int(kalt)} € kalt"
+    else:
+        preis = "Preis k. A."
+
+    titel = (t.get("titel") or "").strip()
+    url = t.get("url") or ""
+
+    lines = [f"🏢 {quelle}"]
+    if titel and titel.lower() not in zeile2.lower():
+        lines.append(titel[:70])
+    lines.append(zeile2)
+    lines.append(preis)
+    if url:
+        lines.append(url)  # bare URL → klickbar + Telegram-Vorschau
+    return "\n".join(lines)
+
+
 def _client() -> anthropic.Anthropic:
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
     if not api_key:
@@ -127,10 +169,12 @@ def _client() -> anthropic.Anthropic:
 
 
 class ConversationAgent:
-    def __init__(self, store: "Store", search_fn=None) -> None:
+    def __init__(self, store: "Store", search_fn=None, notify_fn=None) -> None:
         # search_fn(criteria: dict) -> List[dict]: optionale Live-Suchfunktion
+        # notify_fn(chat_id: str, text: str): direkter Telegram-Versand (am KI-Text vorbei)
         self.store = store
         self.search_fn = search_fn
+        self.notify_fn = notify_fn
         self._histories: Dict[str, List[dict]] = {}
 
     def handle(self, chat_id: str, text: str) -> str:
@@ -236,10 +280,15 @@ class ConversationAgent:
             except Exception as e:
                 logger.exception("On-Demand-Suche fehlgeschlagen: %s", e)
                 return json.dumps({"status": "fehler"})
-            return json.dumps(
-                {"status": "ok", "anzahl": len(treffer), "treffer": treffer},
-                ensure_ascii=False,
-            )
+
+            # Treffer DIREKT als feste Blöcke senden (am KI-Fließtext vorbei),
+            # damit jeder Link klickbar bleibt und nie untergeht.
+            if treffer and self.notify_fn:
+                for t in treffer:
+                    self.notify_fn(chat_id, format_treffer_block(t))
+
+            # Claude bekommt nur die Anzahl zurück → kurze Begleitnachricht, keine Link-Wiedergabe
+            return json.dumps({"status": "gesendet", "anzahl": len(treffer)}, ensure_ascii=False)
 
         return "unbekanntes_tool"
 
