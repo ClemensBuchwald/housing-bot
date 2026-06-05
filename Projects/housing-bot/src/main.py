@@ -22,8 +22,10 @@ from src.notifications import NotificationService
 from typing import List
 
 from src.scrapers.base import BaseScraper
-from src.scrapers.is24 import IS24Scraper
+from src.scrapers.cbg import CBGScraper
+from src.scrapers.inberlinwohnen import InBerlinWohnenScraper
 from src.scrapers.mock import MockScraper
+from src.scrapers.wbm import WBMScraper
 from src.store import Store
 
 load_dotenv()
@@ -37,12 +39,13 @@ logger = logging.getLogger("housing_bot")
 
 
 def build_scrapers(use_mock: bool) -> List[BaseScraper]:
-    scrapers: list[BaseScraper] = []
     if use_mock:
-        scrapers.append(MockScraper())
-    else:
-        scrapers.append(IS24Scraper())
-    return scrapers
+        return [MockScraper()]
+    return [
+        InBerlinWohnenScraper(),  # Tier 1: alle 6 Landeseigenen
+        WBMScraper(),             # Tier 1: WBM direkt (Fallback/Ergänzung)
+        CBGScraper(),             # Tier 2: Charlottenburger Baugenossenschaft
+    ]
 
 
 def run_once(scrapers: List[BaseScraper], store: Store, notifier: NotificationService) -> int:
