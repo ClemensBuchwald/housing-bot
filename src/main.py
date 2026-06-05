@@ -26,6 +26,7 @@ from src.scrapers.cbg import CBGScraper
 from src.scrapers.gesobau import GESOBAUScraper
 from src.scrapers.inberlinwohnen import InBerlinWohnenScraper
 from src.scrapers.mock import MockScraper
+from src.scrapers.vonovia import VonoviaScraper
 from src.scrapers.wbm import WBMScraper
 from src.store import Store
 
@@ -43,9 +44,10 @@ def build_scrapers(use_mock: bool) -> List[BaseScraper]:
     if use_mock:
         return [MockScraper()]
     return [
-        InBerlinWohnenScraper(),  # Tier 1: alle 6 Landeseigenen, mit CW-Filter
-        WBMScraper(),             # Tier 1: WBM direkt (eigene URL, Ergänzung)
-        GESOBAUScraper(),         # Tier 1: GESOBAU (aktuell selten CW, aber pollbar)
+        InBerlinWohnenScraper(),  # Tier 1: alle 6 Landeseigenen (degewo, GESOBAU, Gewobag, HOWOGE, STADT UND LAND, WBM)
+        WBMScraper(),             # Tier 1: WBM direkt (Ergänzung, eigene URL)
+        GESOBAUScraper(),         # Tier 1: GESOBAU direkt (aktuell selten CW, pollbar)
+        VonoviaScraper(),         # Tier 1: Vonovia/Deutsche Wohnen (JSON-API, CW-Bestände)
         CBGScraper(),             # Tier 2: Charlottenburger Baugenossenschaft
     ]
 
