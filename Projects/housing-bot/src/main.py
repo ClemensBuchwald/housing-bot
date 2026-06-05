@@ -53,6 +53,57 @@ def build_scrapers(use_mock: bool) -> List[BaseScraper]:
     ]
 
 
+def _passes_basic(listing: Listing, crit: dict) -> bool:
+    """Leichter Filter für On-Demand-Abfragen (ohne KI, nur harte Kriterien)."""
+    preis = listing.warmmiete or listing.kaltmiete
+    limit = crit.get("warmmiete_max") or crit.get("kaltmiete_max")
+    if preis and limit and preis > float(limit):
+        return False
+    if crit.get("zimmer_min") and listing.zimmer and listing.zimmer < float(crit["zimmer_min"]):
+        return False
+    if crit.get("zimmer_max") and listing.zimmer and listing.zimmer > float(crit["zimmer_max"]):
+        return False
+    if crit.get("flaeche_min") and listing.flaeche and listing.flaeche < float(crit["flaeche_min"]):
+        return False
+    return True
+
+
+def run_one_off_search(criteria: dict) -> List[dict]:
+    """Einmalige Live-Abfrage ohne Auftrag/Persistenz. Gibt kompakte Treffer zurück.
+
+    Nutzt schnelle Quellen + inberlinwohnen mit Seitenlimit, damit es zügig geht.
+    """
+    scrapers: List[BaseScraper] = [
+        VonoviaScraper(),
+        WBMScraper(),
+        GESOBAUScraper(),
+        InBerlinWohnenScraper(page_limit=4),
+    ]
+    yaml_criteria = load_criteria()
+    treffer: List[dict] = []
+    for scraper in scrapers:
+        try:
+            listings = scraper.fetch_listings(yaml_criteria)
+        except Exception:
+            logger.exception("On-Demand: Fehler bei %s", scraper.name)
+            continue
+        for l in listings:
+            if not _passes_basic(l, criteria):
+                continue
+            treffer.append({
+                "titel": l.titel,
+                "ort": l.stadtteil or l.stadt,
+                "warmmiete": l.warmmiete,
+                "kaltmiete": l.kaltmiete,
+                "flaeche": l.flaeche,
+                "zimmer": l.zimmer,
+                "quelle": l.portal,
+                "url": l.url,
+            })
+    logger.info("On-Demand-Suche: %d Treffer", len(treffer))
+    return treffer[:10]  # max 10 für eine lesbare Nachricht
+
+
 def run_scraping_cycle(
     scrapers: List[BaseScraper],
     store: Store,
@@ -152,7 +203,9 @@ def main() -> None:
     scrapers = build_scrapers(use_mock=args.mock)
     store = Store()
     notifier = NotificationService()
-    tg_handler = TelegramHandler(store)
+    # On-Demand-Suche nur im echten Betrieb (nicht im Mock-Modus)
+    search_fn = None if args.mock else run_one_off_search
+    tg_handler = TelegramHandler(store, search_fn=search_fn)
 
     logger.info(
         "Housing Bot gestartet. Scraper: %s. Mock: %s",

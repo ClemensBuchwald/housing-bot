@@ -20,11 +20,11 @@ _TG_API = "https://api.telegram.org/bot{token}"
 
 
 class TelegramHandler:
-    def __init__(self, store: Store) -> None:
+    def __init__(self, store: Store, search_fn=None) -> None:
         self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         self.store = store
-        self.agent = ConversationAgent(store)
+        self.agent = ConversationAgent(store, search_fn=search_fn)
         self._offset = 0
         self._base = _TG_API.format(token=self.token)
 
