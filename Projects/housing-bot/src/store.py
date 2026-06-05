@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Union
@@ -77,16 +78,18 @@ class Store:
     def __init__(self, db_path: Union[Path, str] = DEFAULT_DB_PATH) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._lock = threading.Lock()
         self._migrate()
 
     def _migrate(self) -> None:
-        for stmt in _SCHEMA.strip().split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                self._conn.execute(stmt)
-        self._conn.commit()
+        with self._lock:
+            for stmt in _SCHEMA.strip().split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    self._conn.execute(stmt)
+            self._conn.commit()
 
     # --- Deduplizierung (rückwärtskompatibel) ---
 
@@ -103,6 +106,14 @@ class Store:
             (listing_id, portal),
         ).fetchone()
         return row is not None
+
+    def _execute(self, sql: str, params=()) -> sqlite3.Cursor:
+        with self._lock:
+            return self._conn.execute(sql, params)
+
+    def _commit(self) -> None:
+        with self._lock:
+            self._conn.commit()
 
     def save_listing(self, listing: "Listing") -> None:
         """Speichert vollständige Listing-Daten beim ersten Sehen."""
@@ -200,17 +211,17 @@ class Store:
     def save_mandate(self, chat_id: str, raw_text: str, structured: dict) -> int:
         """Speichert einen neuen Suchauftrag, deaktiviert alte."""
         now = datetime.now().isoformat()
-        # Alte Aufträge dieses Chats stoppen
-        self._conn.execute(
-            "UPDATE mandates SET state = 'stopped', updated_at = ? WHERE chat_id = ? AND state IN ('active','paused')",
-            (now, chat_id),
-        )
-        cur = self._conn.execute(
-            """INSERT INTO mandates (chat_id, raw_text, structured, state, created_at, updated_at)
-               VALUES (?, ?, ?, 'active', ?, ?)""",
-            (chat_id, raw_text, json.dumps(structured, ensure_ascii=False), now, now),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE mandates SET state = 'stopped', updated_at = ? WHERE chat_id = ? AND state IN ('active','paused')",
+                (now, chat_id),
+            )
+            cur = self._conn.execute(
+                """INSERT INTO mandates (chat_id, raw_text, structured, state, created_at, updated_at)
+                   VALUES (?, ?, ?, 'active', ?, ?)""",
+                (chat_id, raw_text, json.dumps(structured, ensure_ascii=False), now, now),
+            )
+            self._conn.commit()
         return cur.lastrowid
 
     def get_active_mandate(self, chat_id: str) -> Optional[dict]:
@@ -239,11 +250,12 @@ class Store:
     def set_mandate_state(self, chat_id: str, state: str) -> bool:
         """Setzt den Zustand des aktiven Auftrags."""
         now = datetime.now().isoformat()
-        cur = self._conn.execute(
-            "UPDATE mandates SET state = ?, updated_at = ? WHERE chat_id = ? AND state IN ('active','paused')",
-            (state, now, chat_id),
-        )
-        self._conn.commit()
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE mandates SET state = ?, updated_at = ? WHERE chat_id = ? AND state IN ('active','paused')",
+                (state, now, chat_id),
+            )
+            self._conn.commit()
         return cur.rowcount > 0
 
     # --- Evaluations-Log ---
