@@ -1,61 +1,84 @@
-"""Telegram-Benachrichtigungen."""
+"""Telegram-Benachrichtigungen — mit KI-Bewertung (Evaluation)."""
 from __future__ import annotations
 
 import logging
 import os
 import time
+from typing import TYPE_CHECKING, Optional
 
 import httpx
 
-from src.models import MatchResult
+from src.models import Listing
+
+if TYPE_CHECKING:
+    from src.evaluator import Evaluation
 
 logger = logging.getLogger(__name__)
 
-TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
+_TG_API = "https://api.telegram.org/bot{token}/sendMessage"
+
+_EMPFEHLUNG_EMOJI = {
+    "sofort anschauen": "🔥",
+    "beobachten": "👀",
+    "überspringen": "⏭",
+}
 
 
-def _format_message(result: MatchResult) -> str:
-    l = result.listing
+def format_evaluation_message(listing: Listing, evaluation: "Evaluation") -> str:
+    """Formatiert die Telegram-Nachricht mit KI-Bewertung."""
+    preis = "–"
+    if listing.warmmiete:
+        preis = f"{listing.warmmiete:.0f} € Warm"
+    elif listing.kaltmiete:
+        preis = f"{listing.kaltmiete:.0f} € Kalt"
 
-    preis_str = "–"
-    if l.warmmiete:
-        preis_str = f"{l.warmmiete:.0f} € Warm"
-    elif l.kaltmiete:
-        preis_str = f"{l.kaltmiete:.0f} € Kalt"
+    flaeche = f"{listing.flaeche:.0f} m²" if listing.flaeche else "–"
+    zimmer = f"{listing.zimmer_gerundet} Zi." if listing.zimmer else "–"
+    ort = f"{listing.stadtteil}, {listing.stadt}" if listing.stadtteil else listing.stadt
+    empfehlung_emoji = _EMPFEHLUNG_EMOJI.get(evaluation.empfehlung, "📋")
 
-    flaeche_str = f"{l.flaeche:.0f} m²" if l.flaeche else "–"
-    zimmer_str = f"{l.zimmer_gerundet} Zi." if l.zimmer else "–"
+    lines = [
+        f"🏠 *Neue Wohnung — Score {evaluation.score}/100*",
+        "",
+        f"📍 {ort}",
+        f"💶 {preis} · {flaeche} · {zimmer}",
+        f"🏢 {listing.portal.upper()} · [{listing.titel[:50]}]({listing.url})",
+        "",
+        f"💬 _{evaluation.kurzfazit}_",
+        "",
+    ]
 
-    ort_str = f"{l.stadtteil}, {l.stadt}" if l.stadtteil else l.stadt
+    if evaluation.vorteile:
+        lines.append("✅ *Vorteile*")
+        for v in evaluation.vorteile[:4]:
+            lines.append(f"  • {v}")
+        lines.append("")
 
-    einzug_str = l.verfuegbar_ab.strftime("%d.%m.%Y") if l.verfuegbar_ab else "sofort"
+    if evaluation.nachteile:
+        lines.append("⚠️ *Nachteile*")
+        for n in evaluation.nachteile[:3]:
+            lines.append(f"  • {n}")
+        lines.append("")
 
-    balkon = "✓" if l.hat_merkmal("balkon", "terrasse", "loggia") else "–"
-    ekueche = "✓" if l.hat_merkmal("einbauküche", "einbaukueche", "ek") else "–"
-    haustiere = "✓" if l.hat_merkmal("haustier", "haustiere erlaubt", "hunde", "katzen") else "–"
+    if evaluation.offene_punkte:
+        lines.append("❓ *Offene Punkte*")
+        for p in evaluation.offene_punkte[:2]:
+            lines.append(f"  • {p}")
+        lines.append("")
 
-    return (
-        f"🏠 *Neue Wohnung gefunden!*\n"
-        f"\n"
-        f"📍 {ort_str}\n"
-        f"💶 {preis_str} · {flaeche_str} · {zimmer_str}\n"
-        f"📅 Frei ab: {einzug_str}\n"
-        f"\n"
-        f"Balkon {balkon}  Einbauküche {ekueche}  Haustiere {haustiere}\n"
-        f"\n"
-        f"🔗 {l.url}\n"
-        f"\n"
-        f"⭐ Score: {result.score}/65"
-    )
+    lines.append(f"{empfehlung_emoji} *Empfehlung: {evaluation.empfehlung.upper()}*")
+
+    return "\n".join(lines)
 
 
 def _send_telegram(token: str, chat_id: str, text: str, retries: int = 3) -> bool:
-    url = TELEGRAM_API.format(token=token)
+    url = _TG_API.format(token=token)
     for attempt in range(1, retries + 1):
         try:
             resp = httpx.post(
                 url,
-                json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+                json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown",
+                      "disable_web_page_preview": True},
                 timeout=10,
             )
             if resp.status_code == 429:
@@ -78,20 +101,26 @@ class NotificationService:
         self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
-    def _telegram_configured(self) -> bool:
+    def _configured(self) -> bool:
         return bool(self.token and self.chat_id)
 
-    def send(self, result: MatchResult) -> bool:
-        if not self._telegram_configured():
-            logger.warning(
-                "Telegram nicht konfiguriert. Setze TELEGRAM_BOT_TOKEN und "
-                "TELEGRAM_CHAT_ID in .env. Nachricht wird nur geloggt."
-            )
-            logger.info("Treffer: %s — %s", result.listing.titel, result.listing.url)
+    def send_evaluation(self, listing: Listing, evaluation: "Evaluation") -> bool:
+        """Sendet eine Benachrichtigung mit KI-Bewertung."""
+        if not self._configured():
+            logger.warning("Telegram nicht konfiguriert — Treffer nur geloggt.")
+            logger.info("TREFFER: %s — Score %d — %s", listing.titel, evaluation.score, evaluation.empfehlung)
             return False
 
-        text = _format_message(result)
+        text = format_evaluation_message(listing, evaluation)
         ok = _send_telegram(self.token, self.chat_id, text)
         if ok:
-            time.sleep(1)  # Höflichkeitspause zwischen Nachrichten
+            time.sleep(1)
         return ok
+
+    def send_text(self, text: str, chat_id: Optional[str] = None) -> bool:
+        """Sendet einen einfachen Text (für Status-Meldungen)."""
+        cid = chat_id or self.chat_id
+        if not self._configured() or not cid:
+            logger.info("Telegram (unkonfiguriert): %s", text[:100])
+            return False
+        return _send_telegram(self.token, cid, text)
