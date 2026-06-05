@@ -1,33 +1,23 @@
-"""Housing Bot — Hauptprogramm.
+"""Housing Bot — KI-gestützter Dauersuchassistent.
 
-Startet mit:
-    python -m src.main
+Zwei Threads:
+  1. Telegram-Thread:  empfängt Aufträge und Befehle (getUpdates-Polling)
+  2. Scraping-Thread:  läuft nur wenn aktiver Auftrag existiert
 
-Einmalig (kein Loop):
-    python -m src.main --once
+Starten:
+  python -m src.main
+  python -m src.main --once --mock   (Einmaliger Test mit Mock-Daten)
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import os
+import threading
 import time
-
-from dotenv import load_dotenv
-
-from src.config import load_criteria
-from src.matching import match
-from src.models import Listing
-from src.notifications import NotificationService
 from typing import List
 
-from src.scrapers.base import BaseScraper
-from src.scrapers.gesobau import GESOBAUScraper
-from src.scrapers.inberlinwohnen import InBerlinWohnenScraper
-from src.scrapers.mock import MockScraper
-from src.scrapers.vonovia import VonoviaScraper
-from src.scrapers.wbm import WBMScraper
-from src.store import Store
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -38,57 +28,76 @@ logging.basicConfig(
 )
 logger = logging.getLogger("housing_bot")
 
+from src.config import load_criteria
+from src.evaluator import evaluate_listing
+from src.models import Listing
+from src.notifications import NotificationService
+from src.scrapers.base import BaseScraper
+from src.scrapers.gesobau import GESOBAUScraper
+from src.scrapers.inberlinwohnen import InBerlinWohnenScraper
+from src.scrapers.mock import MockScraper
+from src.scrapers.vonovia import VonoviaScraper
+from src.scrapers.wbm import WBMScraper
+from src.store import Store
+from src.telegram_handler import TelegramHandler
+
 
 def build_scrapers(use_mock: bool) -> List[BaseScraper]:
     if use_mock:
         return [MockScraper()]
     return [
-        InBerlinWohnenScraper(),  # Tier 1: alle 6 Landeseigenen (degewo, GESOBAU, Gewobag, HOWOGE, STADT UND LAND, WBM)
-        WBMScraper(),             # Tier 1: WBM direkt (Ergänzung, eigene URL)
-        GESOBAUScraper(),         # Tier 1: GESOBAU direkt (aktuell selten CW, pollbar)
-        VonoviaScraper(),         # Tier 1: Vonovia/Deutsche Wohnen (JSON-API, CW-Bestände)
-        # CBGScraper()            # Tier 2: cbg-berlin.de DNS-Fehler, deaktiviert
+        InBerlinWohnenScraper(),  # Tier 1: alle 6 Landeseigenen
+        WBMScraper(),             # Tier 1: WBM direkt
+        GESOBAUScraper(),         # Tier 1: GESOBAU direkt
+        VonoviaScraper(),         # Tier 1: Vonovia/Deutsche Wohnen (JSON-API)
     ]
 
 
-def run_once(scrapers: List[BaseScraper], store: Store, notifier: NotificationService) -> int:
-    criteria = load_criteria()  # frisch laden — ermöglicht Hot-Reload ohne Neustart
+def run_scraping_cycle(
+    scrapers: List[BaseScraper],
+    store: Store,
+    notifier: NotificationService,
+    mandate: dict,
+) -> int:
+    """Führt einen kompletten Scraping-Zyklus gegen den aktiven Auftrag durch."""
     hits = 0
+    criteria = load_criteria()  # Hot-reload aus criteria.yaml
 
     for scraper in scrapers:
-        logger.info("Scraper %s wird ausgeführt …", scraper.name)
+        logger.info("Scraper %s …", scraper.name)
         try:
             listings: List[Listing] = scraper.fetch_listings(criteria)
         except Exception:
             logger.exception("Fehler bei Scraper %s", scraper.name)
             continue
 
-        logger.info("%d Inserate von %s abgerufen", len(listings), scraper.name)
+        logger.info("%d Inserate von %s", len(listings), scraper.name)
 
         for listing in listings:
-            if criteria.benachrichtigung.nur_neue and store.is_known(listing.id, listing.portal):
+            # Deduplizierung
+            if store.is_known(listing.id, listing.portal):
                 continue
 
-            # Vollständige Listing-Daten persistieren (Audit-Trail)
+            # Vollständige Daten persistieren
             store.save_listing(listing)
 
-            result = match(listing, criteria)
+            # KI-Bewertung gegen aktiven Auftrag
+            evaluation = evaluate_listing(listing, mandate)
+            store.save_evaluation(listing.id, listing.portal, mandate.get("id", 0), evaluation.__dict__)
 
-            # Match-Ergebnis persistieren (inkl. Ablehnungsgrund)
-            store.save_match(result, geo_ok=True)
-
-            if not result.bestanden:
+            if not evaluation.passt or evaluation.score < 30:
                 logger.debug(
-                    "Kein Match [%s] '%s': %s",
-                    listing.id, listing.titel, result.ablehnungsgrund,
+                    "Kein Match [%s] score=%d: %s",
+                    listing.id, evaluation.score, evaluation.kurzfazit,
                 )
                 continue
 
             logger.info(
-                "Match! [%s] '%s' — Score %d — %s",
-                listing.id, listing.titel, result.score, listing.stadtteil or listing.stadt,
+                "MATCH! [%s] '%s' — Score %d — %s",
+                listing.id, listing.titel, evaluation.score, evaluation.empfehlung,
             )
-            sent = notifier.send(result)
+
+            sent = notifier.send_evaluation(listing, evaluation)
             if sent:
                 store.mark_notified(listing.id, listing.portal)
             hits += 1
@@ -96,38 +105,103 @@ def run_once(scrapers: List[BaseScraper], store: Store, notifier: NotificationSe
     return hits
 
 
+def scraping_thread(scrapers: List[BaseScraper], store: Store, notifier: NotificationService,
+                    stop_event: threading.Event, poll_interval: int) -> None:
+    """Hintergrund-Thread: scraped wenn aktiver Auftrag vorhanden."""
+    logger.info("Scraping-Thread gestartet (Intervall: %ds)", poll_interval)
+    while not stop_event.is_set():
+        mandate = store.get_any_active_mandate()
+        if mandate:
+            logger.info("Aktiver Auftrag gefunden — starte Scraping-Zyklus")
+            try:
+                hits = run_scraping_cycle(scrapers, store, notifier, mandate)
+                logger.info("%d neue Treffer in diesem Zyklus", hits)
+            except Exception:
+                logger.exception("Fehler im Scraping-Zyklus")
+        else:
+            logger.info("Kein aktiver Auftrag — Bot wartet")
+
+        # Warte in kleinen Schritten, damit stop_event schnell reagiert
+        for _ in range(poll_interval):
+            if stop_event.is_set():
+                break
+            time.sleep(1)
+
+    logger.info("Scraping-Thread beendet")
+
+
+def telegram_thread(handler: TelegramHandler, stop_event: threading.Event) -> None:
+    """Hintergrund-Thread: Telegram getUpdates-Polling."""
+    logger.info("Telegram-Thread gestartet")
+    while not stop_event.is_set():
+        try:
+            handler.poll_once()
+        except Exception:
+            logger.exception("Fehler im Telegram-Thread")
+        time.sleep(2)
+    logger.info("Telegram-Thread beendet")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Housing Bot")
-    parser.add_argument("--once", action="store_true", help="Einmalig ausführen, kein Loop")
-    parser.add_argument("--mock", action="store_true", help="Mock-Scraper verwenden")
+    parser.add_argument("--once", action="store_true", help="Einmalig ausführen")
+    parser.add_argument("--mock", action="store_true", help="Mock-Scraper")
     args = parser.parse_args()
 
     poll_interval = int(os.getenv("POLL_INTERVAL", "10")) * 60
-
     scrapers = build_scrapers(use_mock=args.mock)
     store = Store()
     notifier = NotificationService()
+    tg_handler = TelegramHandler(store)
 
     logger.info(
-        "Housing Bot gestartet. Scraper: %s. Intervall: %ds. Mock: %s",
-        [s.name for s in scrapers],
-        poll_interval,
-        args.mock,
+        "Housing Bot gestartet. Scraper: %s. Mock: %s",
+        [s.name for s in scrapers], args.mock,
     )
 
-    try:
-        if args.once:
-            hits = run_once(scrapers, store, notifier)
-            logger.info("Einmaliger Lauf abgeschlossen. %d Treffer.", hits)
-        else:
-            while True:
-                hits = run_once(scrapers, store, notifier)
-                logger.info("%d Treffer in diesem Durchlauf. Nächster in %ds.", hits, poll_interval)
-                time.sleep(poll_interval)
-    except KeyboardInterrupt:
-        logger.info("Bot gestoppt.")
-    finally:
+    if args.once:
+        # Einmaliger Lauf: vorhandenen Auftrag nutzen oder Mock-Mandate
+        mandate = store.get_any_active_mandate()
+        if not mandate:
+            logger.warning("Kein aktiver Auftrag — Einmallauf mit leerem Auftrag")
+            mandate = {"raw_text": "Test", "structured": {}, "id": 0}
+        hits = run_scraping_cycle(scrapers, store, notifier, mandate)
+        logger.info("Einmaliger Lauf abgeschlossen. %d Treffer.", hits)
         store.close()
+        return
+
+    # Normalbetrieb: zwei Threads
+    stop_event = threading.Event()
+
+    t_scraping = threading.Thread(
+        target=scraping_thread,
+        args=(scrapers, store, notifier, stop_event, poll_interval),
+        daemon=True,
+        name="scraping",
+    )
+    t_telegram = threading.Thread(
+        target=telegram_thread,
+        args=(tg_handler, stop_event),
+        daemon=True,
+        name="telegram",
+    )
+
+    t_scraping.start()
+    t_telegram.start()
+
+    logger.info("Bot läuft. Warte auf Auftrag per Telegram. Stoppen mit Ctrl+C.")
+
+    try:
+        while True:
+            time.sleep(5)
+    except KeyboardInterrupt:
+        logger.info("Bot wird gestoppt …")
+        stop_event.set()
+    finally:
+        t_scraping.join(timeout=10)
+        t_telegram.join(timeout=5)
+        store.close()
+        logger.info("Bot beendet.")
 
 
 if __name__ == "__main__":
