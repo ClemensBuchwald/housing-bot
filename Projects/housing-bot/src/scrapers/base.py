@@ -45,6 +45,8 @@ class BaseScraper(ABC):
         headers: Optional[dict] = None,
         timeout: int = 15,
         retries: int = 3,
+        min_delay: Optional[float] = None,
+        max_delay: Optional[float] = None,
     ) -> Optional[httpx.Response]:
         """HTTP GET mit Retry und höflicher Pause."""
         hdrs = {**DEFAULT_HEADERS, **(headers or {})}
@@ -57,7 +59,7 @@ class BaseScraper(ABC):
                     time.sleep(wait)
                     continue
                 resp.raise_for_status()
-                self._hoefliche_pause()
+                self._hoefliche_pause(min_delay, max_delay)
                 return resp
             except httpx.HTTPError as e:
                 logger.warning("[%s] HTTP-Fehler (Versuch %d/%d): %s", self.name, attempt, retries, e)
@@ -69,11 +71,13 @@ class BaseScraper(ABC):
     def parse(self, html: str) -> BeautifulSoup:
         return BeautifulSoup(html, "lxml")
 
-    def _hoefliche_pause(self) -> None:
+    def _hoefliche_pause(self, min_s: Optional[float] = None, max_s: Optional[float] = None) -> None:
         """Zufällige Pause zwischen Requests — reduziert Blocking-Risiko."""
         import os
-        min_s = float(os.getenv("SCRAPE_DELAY_MIN", "3"))
-        max_s = float(os.getenv("SCRAPE_DELAY_MAX", "8"))
+        if min_s is None:
+            min_s = float(os.getenv("SCRAPE_DELAY_MIN", "3"))
+        if max_s is None:
+            max_s = float(os.getenv("SCRAPE_DELAY_MAX", "8"))
         time.sleep(random.uniform(min_s, max_s))
 
     def __repr__(self) -> str:

@@ -22,7 +22,6 @@ from src.notifications import NotificationService
 from typing import List
 
 from src.scrapers.base import BaseScraper
-from src.scrapers.cbg import CBGScraper
 from src.scrapers.gesobau import GESOBAUScraper
 from src.scrapers.inberlinwohnen import InBerlinWohnenScraper
 from src.scrapers.mock import MockScraper
@@ -48,7 +47,7 @@ def build_scrapers(use_mock: bool) -> List[BaseScraper]:
         WBMScraper(),             # Tier 1: WBM direkt (Ergänzung, eigene URL)
         GESOBAUScraper(),         # Tier 1: GESOBAU direkt (aktuell selten CW, pollbar)
         VonoviaScraper(),         # Tier 1: Vonovia/Deutsche Wohnen (JSON-API, CW-Bestände)
-        CBGScraper(),             # Tier 2: Charlottenburger Baugenossenschaft
+        # CBGScraper()            # Tier 2: cbg-berlin.de DNS-Fehler, deaktiviert
     ]
 
 
