@@ -11,6 +11,8 @@ services:
       - ./data:/app/data
       # Kriterien live editierbar ohne Rebuild
       - ./config:/app/config:ro
+      # Quellcode gemountet: nach git pull reicht 'docker compose restart' (kein Rebuild)
+      - ./src:/app/src:ro
     healthcheck:
       # Einfacher Check: Prozess läuft und data/-Verzeichnis ist schreibbar
       test: ["CMD", "python", "-c", "import os; os.makedirs('/app/data', exist_ok=True)"]

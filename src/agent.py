@@ -83,6 +83,25 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "jetzt_angebote_suchen",
+        "description": (
+            "Macht eine EINMALIGE Live-Abfrage der Portale und zeigt, was es JETZT GERADE gibt — "
+            "OHNE einen dauerhaften Suchauftrag anzulegen. Nutze das, wenn der Nutzer den "
+            "aktuellen Stand sehen will ('was gibt es gerade', 'zeig mal'). Dauert ca. 20-30 Sek. "
+            "Kriterien sind optional; ohne Kriterien werden alle aktuellen Treffer im Zielgebiet gezeigt."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "warmmiete_max": {"type": ["number", "null"]},
+                "kaltmiete_max": {"type": ["number", "null"]},
+                "zimmer_min": {"type": ["number", "null"]},
+                "zimmer_max": {"type": ["number", "null"]},
+                "flaeche_min": {"type": ["number", "null"]},
+            },
+        },
+    },
+    {
         "name": "suche_pausieren",
         "description": "Pausiert die laufende Suche vorübergehend.",
         "input_schema": {"type": "object", "properties": {}},
@@ -108,8 +127,10 @@ def _client() -> anthropic.Anthropic:
 
 
 class ConversationAgent:
-    def __init__(self, store: "Store") -> None:
+    def __init__(self, store: "Store", search_fn=None) -> None:
+        # search_fn(criteria: dict) -> List[dict]: optionale Live-Suchfunktion
         self.store = store
+        self.search_fn = search_fn
         self._histories: Dict[str, List[dict]] = {}
 
     def handle(self, chat_id: str, text: str) -> str:
@@ -205,6 +226,20 @@ class ConversationAgent:
         if name == "suche_stoppen":
             ok = self.store.set_mandate_state(chat_id, "stopped")
             return "gestoppt" if ok else "kein_aktiver_auftrag"
+
+        if name == "jetzt_angebote_suchen":
+            if not self.search_fn:
+                return json.dumps({"status": "nicht_verfuegbar"})
+            criteria = {k: v for k, v in args.items() if v is not None}
+            try:
+                treffer = self.search_fn(criteria)
+            except Exception as e:
+                logger.exception("On-Demand-Suche fehlgeschlagen: %s", e)
+                return json.dumps({"status": "fehler"})
+            return json.dumps(
+                {"status": "ok", "anzahl": len(treffer), "treffer": treffer},
+                ensure_ascii=False,
+            )
 
         return "unbekanntes_tool"
 

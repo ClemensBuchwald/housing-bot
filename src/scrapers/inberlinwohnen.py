@@ -35,6 +35,10 @@ _PROVIDER_DOMAINS = ["degewo", "gesobau", "gewobag", "howoge", "stadtundland", "
 class InBerlinWohnenScraper(BaseScraper):
     name = "inberlinwohnen"
 
+    def __init__(self, page_limit: Optional[int] = None) -> None:
+        # page_limit begrenzt die Seitenzahl (z.B. für schnelle On-Demand-Abfragen)
+        self.page_limit = page_limit
+
     def fetch_listings(self, criteria: Criteria) -> List[Listing]:
         all_listings: List[Listing] = []
         page = 1
@@ -56,6 +60,8 @@ class InBerlinWohnenScraper(BaseScraper):
                 if m:
                     total = int(m.group(1))
                     max_pages = math.ceil(total / 10)
+                    if self.page_limit:
+                        max_pages = min(max_pages, self.page_limit)
                     logger.info("[%s] Gesamt %d Angebote → %d Seiten", self.name, total, max_pages)
                 else:
                     max_pages = 30  # Fallback
