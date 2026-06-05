@@ -38,51 +38,60 @@ class InBerlinWohnenScraper(BaseScraper):
     def fetch_listings(self, criteria: Criteria) -> List[Listing]:
         all_listings: List[Listing] = []
         page = 1
+        max_pages = 3  # Fallback bis Gesamtzahl bekannt
 
-        while True:
-            params = {"bezirk": "charlottenburg-wilmersdorf", "paged": page}
-            resp = self.get(_SEARCH_URL, params=params)
+        while page <= max_pages:
+            # Kein bezirk-Parameter — Filter ist clientseitig (JS), hat keine Wirkung
+            resp = self.get(_SEARCH_URL, params={"paged": page})
             if resp is None:
                 break
 
             soup = self.parse(resp.text)
 
-            # Alle results__row-Divs: gerade = Datenzelle, ungerade = Detail-Panel
+            # Gesamtzahl auf Seite 1 auslesen → max_pages berechnen
+            if page == 1:
+                import math, re as _re
+                m = _re.search(r"von\s+(\d+)\s+Angeboten?", soup.get_text())
+                if m:
+                    total = int(m.group(1))
+                    max_pages = math.ceil(total / 10)
+                    logger.info("[%s] Gesamt %d Angebote → %d Seiten", self.name, total, max_pages)
+                else:
+                    max_pages = 30  # Fallback
+
+            # Alle results__row-Divs
             all_rows = soup.find_all("div", class_=lambda c: c and "results__row" in c)
             if not all_rows:
                 if page == 1:
                     logger.warning("[%s] Keine results__row-Elemente gefunden — Selektor prüfen.", self.name)
                 break
 
-            # Detail-Links aus der gesamten Seite (Provider-Domains)
+            # Externe Anbieter-Links
             all_ext_links = [
                 a["href"]
                 for a in soup.find_all("a", href=True)
                 if any(d in a["href"] for d in _PROVIDER_DOMAINS)
             ]
 
-            # Daten-Rows = nur die mit erkennbarem Inhalt (Adresse, Zimmer etc.)
+            # Daten-Rows (mit Adresse/Zimmer) vs. Detail-Panels
             data_rows = [r for r in all_rows if "Zimmeranzahl" in r.get_text() or "Adresse" in r.get_text()]
+            detail_rows = [r for r in all_rows if "WBS" in r.get_text()]
 
-            logger.debug("[%s] Seite %d: %d Daten-Rows, %d externe Links", self.name, page, len(data_rows), len(all_ext_links))
+            logger.debug("[%s] Seite %d/%d: %d Listings", self.name, page, max_pages, len(data_rows))
 
             for idx, row in enumerate(data_rows):
                 ext_link = all_ext_links[idx] if idx < len(all_ext_links) else _SEARCH_URL
-                listing = self._parse_row(row, ext_link)
+                detail = detail_rows[idx] if idx < len(detail_rows) else None
+                listing = self._parse_row(row, ext_link, detail)
                 if listing and in_zielgebiet(listing):
                     all_listings.append(listing)
 
-            # Weitere Seiten nur wenn es mehr Rows als auf einer Seite gibt
-            if len(data_rows) < 10:
-                break
             page += 1
-            if page > 50:
-                break
 
-        logger.info("[%s] %d Inserate im Zielgebiet CW", self.name, len(all_listings))
+        logger.info("[%s] %d Inserate im Zielgebiet CW (von %d Seiten)", self.name, len(all_listings), page - 1)
         return all_listings
 
-    def _parse_row(self, row, ext_link: str) -> Optional[Listing]:
+    def _parse_row(self, row, ext_link: str, detail=None) -> Optional[Listing]:
         try:
             text = row.get_text(" | ", strip=True)
 
@@ -130,7 +139,7 @@ class InBerlinWohnenScraper(BaseScraper):
                 warmmiete=warmmiete,
                 flaeche=flaeche,
                 zimmer=zimmer,
-                merkmale=[f"PLZ:{plz}", f"Einzug:{einzug_str}"] if plz else [],
+                merkmale=_build_merkmale(plz, einzug_str, detail),
                 gefunden_am=datetime.now(),
             )
         except Exception as e:
@@ -142,6 +151,21 @@ def _extract_field(text: str, label: str) -> Optional[str]:
     """Extrahiert den Wert nach einem Label aus dem pipe-getrennten Row-Text."""
     m = re.search(rf"{re.escape(label)}:\s*\|?\s*([^|]+)", text, re.IGNORECASE)
     return m.group(1).strip() if m else None
+
+
+def _build_merkmale(plz: str, einzug: str, detail) -> List[str]:
+    m = []
+    if plz:
+        m.append(f"PLZ:{plz}")
+    if einzug:
+        m.append(f"Einzug:{einzug}")
+    if detail:
+        t = detail.get_text(" ", strip=True)
+        for label in ["WBS", "Etage", "Heizung"]:
+            v = _extract_field(t, label)
+            if v:
+                m.append(f"{label}:{v}")
+    return m
 
 
 def _extract_anbieter(url: str) -> str:
