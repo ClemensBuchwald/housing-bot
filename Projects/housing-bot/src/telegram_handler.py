@@ -21,8 +21,34 @@ logger = logging.getLogger(__name__)
 
 _TG_API = "https://api.telegram.org/bot{token}"
 
-# Minimale Nachrichtenlänge damit Freitext als Auftrag gilt (keine versehentlichen Einwort-Aufträge)
+# Minimale Nachrichtenlänge damit Freitext als Auftrag gilt
 _MIN_MANDATE_LENGTH = 20
+
+# Schlüsselwörter die auf eine echte Wohnungssuche hinweisen
+_MANDATE_KEYWORDS = [
+    "zimmer", "wohnung", "qm", "m²", "miete", "warm", "kalt",
+    "suche", "charlottenburg", "wilmersdorf", "halensee", "grunewald",
+    "balkon", "terrasse", "erdgeschoss", "aufzug", "keller",
+    "bezirk", "ortsteil", "nebenkosten",
+]
+
+# Fragen/Befehle die NICHT als Auftrag gewertet werden sollen
+_QUESTION_PATTERNS = [
+    "was suchst", "was läuft", "wieviele", "wie viele", "was machst",
+    "bist du", "hörst du", "kannst du", "zeig mir", "zeige mir",
+    "was hast du", "was ist", "erkläre", "hilf mir", "was kann",
+]
+
+
+def _is_mandate(text: str) -> bool:
+    """Prüft ob ein Text ein echter Wohnungssuchauftrag ist."""
+    lower = text.lower()
+    # Fragen ausschließen
+    if any(p in lower for p in _QUESTION_PATTERNS):
+        return False
+    # Mindestens 2 Wohnungs-Schlüsselwörter müssen vorkommen
+    hits = sum(1 for kw in _MANDATE_KEYWORDS if kw in lower)
+    return hits >= 2
 
 
 class TelegramHandler:
@@ -96,22 +122,34 @@ class TelegramHandler:
             if not mandate:
                 paused = self._get_paused_mandate(chat_id)
                 if paused:
-                    self.send(chat_id, f"⏸ Pausierter Auftrag:\n\n_{paused['raw_text']}_\n\nMit /weiter fortsetzen.")
+                    self.send(chat_id, f"⏸ *Pausierter Auftrag*\n\n_{paused['raw_text']}_\n\nMit /weiter fortsetzen.")
                 else:
-                    self.send(chat_id, "Kein aktiver Suchauftrag. Schreib mir was du suchst.")
+                    self.send(chat_id,
+                        "😴 Kein aktiver Suchauftrag.\n\n"
+                        "Schreib mir deinen Auftrag als Freitext, z. B.:\n"
+                        "_3 Zimmer in Charlottenburg, max 1.400 € warm, Balkon, kein EG_"
+                    )
             else:
                 s = mandate.get("structured", {})
-                lines = [f"✅ *Aktiver Suchauftrag*\n\n_{mandate['raw_text']}_\n"]
+                lines = ["✅ *Aktuell aktiver Suchauftrag:*\n"]
+                lines.append(f"_{mandate['raw_text']}_\n")
+                lines.append("*Verstanden als:*")
                 if s.get("zielorte"):
                     lines.append(f"📍 Orte: {', '.join(s['zielorte'])}")
                 if s.get("warmmiete_max"):
                     lines.append(f"💶 Max. Warmmiete: {s['warmmiete_max']} €")
                 if s.get("zimmer_min"):
-                    lines.append(f"🚪 Zimmer ab: {s['zimmer_min']}")
+                    zi = str(s['zimmer_min'])
+                    if s.get("zimmer_max"):
+                        zi += f"–{s['zimmer_max']}"
+                    lines.append(f"🚪 Zimmer: {zi}")
+                if s.get("flaeche_min"):
+                    lines.append(f"📐 Mindestfläche: {s['flaeche_min']} m²")
                 if s.get("ausschlusskriterien"):
                     lines.append(f"🚫 Ausschluss: {', '.join(s['ausschlusskriterien'])}")
                 if s.get("wunschkriterien"):
                     lines.append(f"⭐ Wünsche: {', '.join(s['wunschkriterien'])}")
+                lines.append("\n_/pause · /stop · /status_")
                 self.send(chat_id, "\n".join(lines))
 
         elif cmd == "/pause":
@@ -138,7 +176,21 @@ class TelegramHandler:
 
     def _handle_freetext(self, chat_id: str, text: str) -> None:
         if len(text) < _MIN_MANDATE_LENGTH:
-            self.send(chat_id, "Bitte gib einen vollständigeren Suchauftrag ein (min. 20 Zeichen).")
+            return  # Kurze Nachrichten still ignorieren
+
+        if not _is_mandate(text):
+            # Keine Wohnungssuche — kurze Orientierungshilfe
+            mandate = self.store.get_active_mandate(chat_id)
+            if mandate:
+                self.send(chat_id,
+                    "Ich bin ein Wohnungssuch-Bot. Aktuell suche ich aktiv.\n"
+                    "Befehle: /auftrag /pause /stop /status"
+                )
+            else:
+                self.send(chat_id,
+                    "Ich bin ein Wohnungssuch-Bot und warte auf einen Suchauftrag.\n"
+                    "Schreib z. B.: _3 Zimmer in Charlottenburg, max 1.400 € warm, Balkon_"
+                )
             return
 
         self.send(chat_id, "⏳ Auftrag wird verstanden… einen Moment.")
