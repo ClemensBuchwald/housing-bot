@@ -2,15 +2,16 @@
 
 Abgedeckt: degewo, GESOBAU, Gewobag, HOWOGE, STADT UND LAND, WBM
 
-Technischer Befund (Live-Prüfung 2026-06-05):
+Technischer Befund (Live-Analyse 2026-06-05):
   - Server-seitig gerendert, kein AJAX nötig
-  - Pagination: 10 Angebote pro Seite, 267 Angebote gesamt
-  - Bezirksfilter "Charlottenburg-Wilmersdorf" im Formular vorhanden
-  - Detailseiten-Links zeigen auf externe Domains (degewo.de, howoge.de etc.)
+  - Listings: div[class*='results__row'] — je 2 Rows pro Inserat:
+      Row 1 (gerade): Adresse | Zimmer | Fläche | Kaltmiete | Nebenkosten | Gesamtmiete | Datum
+      Row 2 (ungerade): ausgeklappter Detail-Bereich mit externem "Alle Details"-Link
+  - Externe Links zeigen direkt auf Provider-Seiten (degewo.de, wbm.de, etc.)
+  - Bezirksfilter: ?bezirk=charlottenburg-wilmersdorf (serverseitig, aber aktuell 0 CW-Angebote)
+  - Pagination: ?paged=N (wenn mehr als 20 Listings)
 
-Geografischer Filter:
-  Nur Listings übernehmen, die mindestens einem der Zielorte zugeordnet werden können:
-  Charlottenburg, Wilmersdorf, Halensee, Grunewald
+Geografischer Filter: geo.py — nur CW-Inserate werden weitergegeben
 """
 from __future__ import annotations
 
@@ -18,7 +19,6 @@ import logging
 import re
 from datetime import datetime
 from typing import List, Optional
-from urllib.parse import urlencode
 
 from src.config import Criteria
 from src.models import Listing
@@ -27,122 +27,121 @@ from src.scrapers.geo import in_zielgebiet, extract_stadtteil
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://inberlinwohnen.de"
-_SEARCH_URL = "https://inberlinwohnen.de/wohnungsfinder/"
-
-# Bezirks-Slug für den Filter (aus der Seite ermittelt)
-_BEZIRK_PARAM = "charlottenburg-wilmersdorf"
+_BASE_URL = "https://www.inberlinwohnen.de"
+_SEARCH_URL = "https://www.inberlinwohnen.de/wohnungsfinder/"
+_PROVIDER_DOMAINS = ["degewo", "gesobau", "gewobag", "howoge", "stadtundland", "wbm.de"]
 
 
 class InBerlinWohnenScraper(BaseScraper):
     name = "inberlinwohnen"
 
     def fetch_listings(self, criteria: Criteria) -> List[Listing]:
-        listings: List[Listing] = []
+        all_listings: List[Listing] = []
         page = 1
 
         while True:
-            params = {
-                "bezirk": _BEZIRK_PARAM,
-                "paged": page,
-            }
+            params = {"bezirk": "charlottenburg-wilmersdorf", "paged": page}
             resp = self.get(_SEARCH_URL, params=params)
             if resp is None:
                 break
 
             soup = self.parse(resp.text)
-            cards = self._find_cards(soup)
 
-            if not cards:
+            # Alle results__row-Divs: gerade = Datenzelle, ungerade = Detail-Panel
+            all_rows = soup.find_all("div", class_=lambda c: c and "results__row" in c)
+            if not all_rows:
                 if page == 1:
-                    logger.warning(
-                        "[%s] Keine Karten gefunden. "
-                        "Selektoren bitte mit DevTools auf inberlinwohnen.de prüfen.",
-                        self.name,
-                    )
+                    logger.warning("[%s] Keine results__row-Elemente gefunden — Selektor prüfen.", self.name)
                 break
 
-            for card in cards:
-                listing = self._parse_card(card)
-                if listing and in_zielgebiet(listing):
-                    listings.append(listing)
+            # Detail-Links aus der gesamten Seite (Provider-Domains)
+            all_ext_links = [
+                a["href"]
+                for a in soup.find_all("a", href=True)
+                if any(d in a["href"] for d in _PROVIDER_DOMAINS)
+            ]
 
-            # Prüfe ob weitere Seiten existieren
-            next_btn = soup.select_one("a.next, .pagination a[rel='next'], a[aria-label='Nächste Seite']")
-            if not next_btn:
+            # Daten-Rows = nur die mit erkennbarem Inhalt (Adresse, Zimmer etc.)
+            data_rows = [r for r in all_rows if "Zimmeranzahl" in r.get_text() or "Adresse" in r.get_text()]
+
+            logger.debug("[%s] Seite %d: %d Daten-Rows, %d externe Links", self.name, page, len(data_rows), len(all_ext_links))
+
+            for idx, row in enumerate(data_rows):
+                ext_link = all_ext_links[idx] if idx < len(all_ext_links) else _SEARCH_URL
+                listing = self._parse_row(row, ext_link)
+                if listing and in_zielgebiet(listing):
+                    all_listings.append(listing)
+
+            # Weitere Seiten nur wenn es mehr Rows als auf einer Seite gibt
+            if len(data_rows) < 10:
                 break
             page += 1
-            if page > 30:  # Sicherheitsgrenze
+            if page > 50:
                 break
 
-        logger.info("[%s] %d Inserate im Zielgebiet", self.name, len(listings))
-        return listings
+        logger.info("[%s] %d Inserate im Zielgebiet CW", self.name, len(all_listings))
+        return all_listings
 
-    def _find_cards(self, soup):
-        """Probiert bekannte Selektoren, gibt die erste funktionierende Liste zurück."""
-        selectors = [
-            ".wohnungsfinder-item",
-            "article.wohnung",
-            ".wf-item",
-            ".immo-item",
-            "li.wohnungsangebot",
-            "div[class*='wohnung']",
-        ]
-        for sel in selectors:
-            cards = soup.select(sel)
-            if cards:
-                logger.debug("[%s] Selektor '%s' → %d Karten", self.name, sel, len(cards))
-                return cards
-        return []
-
-    def _parse_card(self, card) -> Optional[Listing]:
+    def _parse_row(self, row, ext_link: str) -> Optional[Listing]:
         try:
-            # Link zur Detailseite
-            link = card.select_one("a[href]")
-            url = link["href"] if link else _SEARCH_URL
-            if url.startswith("/"):
-                url = _BASE_URL + url
+            text = row.get_text(" | ", strip=True)
 
-            # ID aus URL ableiten
-            listing_id = re.sub(r"[^a-z0-9]", "-", url.lower().split("//")[-1])[:80]
+            # Adresse (enthält PLZ)
+            addr = _extract_field(text, "Adresse")
+            plz_match = re.search(r"\b(\d{5})\b", addr or "")
+            plz = plz_match.group(1) if plz_match else ""
 
-            # Titel
-            titel_el = card.select_one("h2, h3, .title, .bezeichnung, [class*='title']")
-            titel = titel_el.get_text(strip=True) if titel_el else "Wohnung"
+            # Ortsteil aus Adresse extrahieren (kommt nach der PLZ)
+            stadtteil = None
+            if addr:
+                stadtteil = extract_stadtteil(addr)
 
-            # Adresse / Stadtteil — aus dem gesamten Kartentext
-            text = card.get_text(" ", strip=True)
-            stadtteil = extract_stadtteil(text + " " + titel)
-
-            # Preis
-            kaltmiete = _extract_price(text, ["Kaltmiete", "Nettokaltmiete"])
-            warmmiete = _extract_price(text, ["Warmmiete", "Gesamtmiete", "Gesamtmiete:"])
-            if warmmiete is None and kaltmiete is None:
-                warmmiete = _first_price(text)
+            # Preise
+            kaltmiete = _to_float(_extract_field(text, "Kaltmiete"))
+            nebenkosten = _to_float(_extract_field(text, "Nebenkosten"))
+            warmmiete = _to_float(_extract_field(text, "Gesamtmiete"))
 
             # Fläche und Zimmer
-            flaeche = _extract_qm(text)
-            zimmer = _extract_zimmer(text)
+            zimmer_raw = _extract_field(text, "Zimmeranzahl")
+            zimmer = _to_float(zimmer_raw)
+            flaeche_raw = _extract_field(text, "Wohnfläche")
+            flaeche = _to_float(flaeche_raw.replace(" m²", "") if flaeche_raw else None)
 
-            # Anbieter (landeseigene)
-            anbieter = _extract_anbieter(url)
+            # Einzugsdatum
+            einzug_str = _extract_field(text, "Bezugsfertig ab")
+
+            # Anbieter aus dem externen Link
+            anbieter = _extract_anbieter(ext_link)
+
+            # ID aus PLZ + Zimmer + Kaltmiete (stabil genug für Dedup)
+            id_raw = f"{anbieter}-{plz}-{zimmer_raw}-{kaltmiete}"
+            listing_id = re.sub(r"[^a-zA-Z0-9]", "-", id_raw)[:80]
+
+            titel = f"[{anbieter}] {zimmer_raw} Zi, {flaeche_raw} — {addr}" if addr else f"[{anbieter}] Wohnung"
 
             return Listing(
                 id=f"ibw-{listing_id}",
                 portal="inberlinwohnen",
-                url=url,
-                titel=f"[{anbieter}] {titel}" if anbieter else titel,
+                url=ext_link,
+                titel=titel,
                 stadt="Berlin",
                 stadtteil=stadtteil,
                 kaltmiete=kaltmiete,
                 warmmiete=warmmiete,
                 flaeche=flaeche,
                 zimmer=zimmer,
+                merkmale=[f"PLZ:{plz}", f"Einzug:{einzug_str}"] if plz else [],
                 gefunden_am=datetime.now(),
             )
         except Exception as e:
             logger.debug("[%s] Parse-Fehler: %s", self.name, e)
             return None
+
+
+def _extract_field(text: str, label: str) -> Optional[str]:
+    """Extrahiert den Wert nach einem Label aus dem pipe-getrennten Row-Text."""
+    m = re.search(rf"{re.escape(label)}:\s*\|?\s*([^|]+)", text, re.IGNORECASE)
+    return m.group(1).strip() if m else None
 
 
 def _extract_anbieter(url: str) -> str:
@@ -153,34 +152,14 @@ def _extract_anbieter(url: str) -> str:
     for key, name in mapping.items():
         if key in url.lower():
             return name
-    return ""
+    return "landeseigen"
 
 
-def _extract_price(text: str, labels: List[str]) -> Optional[float]:
-    for label in labels:
-        m = re.search(rf"{re.escape(label)}[:\s]*([0-9.]+(?:,[0-9]{{2}})?)\s*€?", text, re.IGNORECASE)
-        if m:
-            return _to_float(m.group(1))
-    return None
-
-
-def _first_price(text: str) -> Optional[float]:
-    m = re.search(r"(\d{3,4}(?:[.,]\d{2})?)\s*€", text)
-    return _to_float(m.group(1)) if m else None
-
-
-def _extract_qm(text: str) -> Optional[float]:
-    m = re.search(r"(\d{2,3}(?:[.,]\d{1,2})?)\s*m²", text, re.IGNORECASE)
-    return _to_float(m.group(1)) if m else None
-
-
-def _extract_zimmer(text: str) -> Optional[float]:
-    m = re.search(r"(\d(?:[.,]\d)?)\s*(?:Zimmer|Zi\.)", text, re.IGNORECASE)
-    return _to_float(m.group(1)) if m else None
-
-
-def _to_float(s: str) -> Optional[float]:
+def _to_float(s: Optional[str]) -> Optional[float]:
+    if not s:
+        return None
     try:
-        return float(str(s).replace(".", "").replace(",", ".").strip())
+        cleaned = re.sub(r"[^\d,.]", "", s).replace(".", "").replace(",", ".")
+        return float(cleaned) if cleaned else None
     except (ValueError, TypeError):
         return None

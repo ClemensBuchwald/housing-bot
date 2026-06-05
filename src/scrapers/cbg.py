@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 _BASE_URL = "https://www.cbg-berlin.de"
 _SEARCH_URL = "https://www.cbg-berlin.de/wohnungen/"
 
+# TODO: Domain cbg-berlin.de ist aktuell nicht erreichbar (DNS-Fehler).
+# Korrekte URL noch zu ermitteln. Scraper gibt bis dahin leer zurück.
+
 
 class CBGScraper(BaseScraper):
     name = "cbg"
