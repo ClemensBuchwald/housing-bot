@@ -63,7 +63,8 @@ class TelegramHandler:
 
         # Nur erlaubte Chat-ID beachten (Sicherheit)
         if self.chat_id and chat_id != self.chat_id:
-            logger.debug("Nachricht von unbekanntem Chat %s ignoriert", chat_id)
+            logger.info("Nachricht von Chat %s ('%s') ignoriert — nicht in TELEGRAM_CHAT_ID",
+                        chat_id, msg.get("chat", {}).get("title", "privat"))
             return
 
         logger.info("Telegram-Eingang [%s]: %s", chat_id, text[:80])
