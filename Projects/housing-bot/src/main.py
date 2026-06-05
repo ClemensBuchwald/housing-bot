@@ -33,8 +33,10 @@ from src.evaluator import evaluate_listing
 from src.models import Listing
 from src.notifications import NotificationService
 from src.scrapers.base import BaseScraper
+from src.scrapers.degewo import DegewoScraper
 from src.scrapers.gesobau import GESOBAUScraper
 from src.scrapers.gewobag import GewobagScraper
+from src.scrapers.heimstaden import HeimstadenScraper
 from src.scrapers.immowelt import ImmoweltScraper
 from src.scrapers.inberlinwohnen import InBerlinWohnenScraper
 from src.scrapers.kleinanzeigen import KleinanzeigenScraper
@@ -54,8 +56,10 @@ def build_scrapers(use_mock: bool) -> List[BaseScraper]:
         GESOBAUScraper(),         # Tier 1: GESOBAU direkt
         VonoviaScraper(),         # Tier 1: Vonovia/Deutsche Wohnen (JSON-API)
         GewobagScraper(),         # Tier 1: Gewobag direkt (CW-Bezirksfilter)
+        DegewoScraper(),          # Tier 1: degewo (TYPO3-HTML, kein Playwright nötig)
         ImmoweltScraper(),        # Tier 2: Immowelt (großes Portal, CW-Ortsteilsuche)
         KleinanzeigenScraper(),   # Tier 2: Kleinanzeigen (private + Makler)
+        HeimstadenScraper(),      # Tier 3: Heimstaden (JS, Playwright-Basis)
     ]
 
 

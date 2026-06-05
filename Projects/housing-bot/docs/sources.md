@@ -7,6 +7,8 @@ Stand: 2026-06-05 · Zielgebiet: Charlottenburg, Wilmersdorf, Halensee, Grunewal
 | Quelle | Typ | Zugang | Selektoren | Ortsteil |
 |--------|-----|--------|-----------|----------|
 | **inberlinwohnen.de** | Aggregator (6 Landeseigene) | Server-HTML | `div.results__row` | Adresse+PLZ |
+| **degewo** | Landeseigen | Server-HTML (TYPO3/tx_openimmo) | `div.c-teaser--apartment` | Titel/Straße |
+| **Heimstaden** | Privat | **JS — Playwright** | diagnose-first | Text/PLZ |
 | **WBM** | Landeseigen | Server-HTML | `article.immo-element` | Titel/Adresse |
 | **GESOBAU** | Landeseigen | Server-HTML | `article`/Expose | Text |
 | **Gewobag** | Landeseigen | Server-HTML | `article.angebot-big-box.gw-offer` | Adresse+PLZ |
@@ -33,8 +35,25 @@ nutzbare Angebotsseite. Nicht als Scraper gebaut (keine Schein-Quellen).
 
 | Quelle | Grund | Möglicher Weg |
 |--------|-------|---------------|
-| **degewo** (immosuche.degewo.de) | JS-SPA (Immomio), Catch-all-Routing, kein offener API-Pfad | Headless-Browser (Playwright) — separater größerer Schritt |
 | **ImmoScout24** | HTML 401-geblockt; Mobile-API rotiert Endpunkte | offizieller Partner-API-Key |
+
+**Korrektur:** degewo wurde zunächst fälschlich als JS-SPA eingestuft (falscher
+URL-Pfad getestet). Tatsächlich ist `immosuche.degewo.de/immosuche` server-seitig
+gerendert (TYPO3) → als HTML-Scraper gebaut, **kein Playwright nötig**.
+
+## JS-Quellen via Playwright-Basis (`browser_base.py`)
+
+Wiederverwendbare Headless-Chromium-Basis für echte JS-Quellen:
+
+| Quelle | Status |
+|--------|--------|
+| **Heimstaden** | erste JS-Quelle, diagnose-first (Selektoren via Server-Logs fixieren) |
+| WG-Gesucht | Kandidat für Playwright-Basis (anti-scraping) |
+| Engel & Völkers, von Poll | Kandidaten (SPA / Bot-Schutz) |
+
+Infra: Dockerfile installiert Chromium (`playwright install --with-deps chromium`,
+~400 MB), compose setzt `shm_size: 1gb`. Lazy-Import: fehlt Playwright, werden
+JS-Quellen sauber übersprungen, HTML-Quellen laufen normal weiter.
 
 ## Optionaler Sonderkanal (vorgemerkt, nicht gebaut)
 
