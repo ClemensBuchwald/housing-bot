@@ -1,13 +1,13 @@
-"""WBM — Wohnungsbaugesellschaft Berlin-Mitte.
+"""GESOBAU — Wohnungssuche.
 
 Technischer Befund (Live-Prüfung 2026-06-05):
-  - Korrekte URL: https://www.wbm.de/wohnungen-berlin/angebote/
-  - Server-seitig gerendert
-  - Listing-Struktur: Adresse als Heading, Zimmer/Fläche/Warmmiete als Bullet Points
-  - Detail-Links: /wohnungen-berlin/angebote/details/[slug]/
-  - Aktuell wenige Angebote in CW, aber pollbar
+  - URL: https://www.gesobau.de/mieten/wohnungssuche
+  - Server-seitig gerendert, 6 Angebote sichtbar im HTML
+  - Klassen-Präfix: csm_ (TYPO3-CMS)
+  - Aktuell KEINE Angebote in Charlottenburg-Wilmersdorf
+  - Trotzdem pollbar — bei neuen CW-Angeboten sofort relevant
 
-Geografischer Filter: geo.py
+Geografischer Filter: geo.py — nur CW-Inserate werden weitergegeben
 """
 from __future__ import annotations
 
@@ -23,12 +23,12 @@ from src.scrapers.geo import in_zielgebiet, extract_stadtteil
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://www.wbm.de"
-_SEARCH_URL = "https://www.wbm.de/wohnungen-berlin/angebote/"
+_BASE_URL = "https://www.gesobau.de"
+_SEARCH_URL = "https://www.gesobau.de/mieten/wohnungssuche"
 
 
-class WBMScraper(BaseScraper):
-    name = "wbm"
+class GESOBAUScraper(BaseScraper):
+    name = "gesobau"
 
     def fetch_listings(self, criteria: Criteria) -> List[Listing]:
         resp = self.get(_SEARCH_URL)
@@ -37,22 +37,17 @@ class WBMScraper(BaseScraper):
 
         soup = self.parse(resp.text)
 
-        # WBM-Selektoren (aus Live-Analyse)
+        # GESOBAU nutzt TYPO3, Klassen-Präfix csm_
         cards = (
-            soup.select("li.wbm-expose")
-            or soup.select(".wbm-expose-list li")
-            or soup.select("article.wbm-expose")
-            or soup.select(".immolist li")
-            or soup.select("ul.wohnungen li")
-            or [el for el in soup.select("li") if "zimmer" in el.get_text(strip=True).lower()]
+            soup.select("li.wohnungsangebot")
+            or soup.select(".wohnangebote li")
+            or soup.select("[class*='expose']")
+            or soup.select("[class*='wohnung']")
+            or soup.select("article")
         )
 
         if not cards:
-            logger.warning(
-                "[%s] Keine Inserate gefunden auf %s. "
-                "Selektoren bitte mit DevTools prüfen.",
-                self.name, _SEARCH_URL,
-            )
+            logger.warning("[%s] Keine Inserate gefunden — Selektoren prüfen.", self.name)
             return []
 
         listings = []
@@ -61,36 +56,37 @@ class WBMScraper(BaseScraper):
             if listing and in_zielgebiet(listing):
                 listings.append(listing)
 
-        logger.info("[%s] %d Inserate im Zielgebiet (von %d gesamt)", self.name, len(listings), len(cards))
+        total = len(cards)
+        matched = len(listings)
+        if matched == 0:
+            logger.info("[%s] %d Inserate gefunden, 0 im Zielgebiet CW.", self.name, total)
+        else:
+            logger.info("[%s] %d Inserate im Zielgebiet (von %d gesamt)", self.name, matched, total)
         return listings
 
     def _parse_card(self, card) -> Optional[Listing]:
         try:
-            # Detail-Link
-            link = card.select_one("a[href*='/angebote/']") or card.select_one("a[href]")
+            link = card.select_one("a[href]")
             if not link:
                 return None
             href = link["href"]
             url = (_BASE_URL + href) if href.startswith("/") else href
-            listing_id = url.rstrip("/").split("/")[-1] or re.sub(r"\W", "-", url)[-60:]
+            listing_id = url.rstrip("/").split("/")[-1][:60]
 
-            # Adresse als Titel (WBM zeigt Adresse als Hauptüberschrift)
-            titel_el = card.select_one("h2, h3, h4, .address, [class*='address'], [class*='title']")
-            titel = titel_el.get_text(strip=True) if titel_el else "WBM Wohnung"
+            titel_el = card.select_one("h2, h3, .title, [class*='title'], [class*='headline']")
+            titel = titel_el.get_text(strip=True) if titel_el else "GESOBAU Wohnung"
 
             text = card.get_text(" ", strip=True)
             stadtteil = extract_stadtteil(titel + " " + text)
 
-            # Warmmiete (WBM nennt "Warmmiete" explizit)
             warmmiete = _extract_price(text, ["Warmmiete", "Gesamtmiete"])
             kaltmiete = _extract_price(text, ["Kaltmiete", "Nettokaltmiete"])
-
             flaeche = _extract_qm(text)
             zimmer = _extract_zimmer(text)
 
             return Listing(
-                id=f"wbm-{listing_id}",
-                portal="wbm",
+                id=f"gesobau-{listing_id}",
+                portal="gesobau",
                 url=url,
                 titel=titel,
                 stadt="Berlin",

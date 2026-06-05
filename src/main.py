@@ -23,6 +23,7 @@ from typing import List
 
 from src.scrapers.base import BaseScraper
 from src.scrapers.cbg import CBGScraper
+from src.scrapers.gesobau import GESOBAUScraper
 from src.scrapers.inberlinwohnen import InBerlinWohnenScraper
 from src.scrapers.mock import MockScraper
 from src.scrapers.wbm import WBMScraper
@@ -42,8 +43,9 @@ def build_scrapers(use_mock: bool) -> List[BaseScraper]:
     if use_mock:
         return [MockScraper()]
     return [
-        InBerlinWohnenScraper(),  # Tier 1: alle 6 Landeseigenen
-        WBMScraper(),             # Tier 1: WBM direkt (Fallback/Ergänzung)
+        InBerlinWohnenScraper(),  # Tier 1: alle 6 Landeseigenen, mit CW-Filter
+        WBMScraper(),             # Tier 1: WBM direkt (eigene URL, Ergänzung)
+        GESOBAUScraper(),         # Tier 1: GESOBAU (aktuell selten CW, aber pollbar)
         CBGScraper(),             # Tier 2: Charlottenburger Baugenossenschaft
     ]
 

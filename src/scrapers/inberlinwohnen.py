@@ -2,28 +2,36 @@
 
 Abgedeckt: degewo, GESOBAU, Gewobag, HOWOGE, STADT UND LAND, WBM
 
-Technischer Ansatz:
-  Die Seite lädt Inserate per AJAX-Request gegen eine interne JSON-API.
-  Endpunkt: POST https://inberlinwohnen.de/wp-json/inberlinwohnen/v1/wohnungsfinder
-  (ermittelt per Browser-DevTools Network-Tab → XHR-Requests beim Laden des Finders)
+Technischer Befund (Live-Prüfung 2026-06-05):
+  - Server-seitig gerendert, kein AJAX nötig
+  - Pagination: 10 Angebote pro Seite, 267 Angebote gesamt
+  - Bezirksfilter "Charlottenburg-Wilmersdorf" im Formular vorhanden
+  - Detailseiten-Links zeigen auf externe Domains (degewo.de, howoge.de etc.)
 
-  Falls der API-Endpunkt sich ändert: HTML-Fallback über CSS-Selektoren.
+Geografischer Filter:
+  Nur Listings übernehmen, die mindestens einem der Zielorte zugeordnet werden können:
+  Charlottenburg, Wilmersdorf, Halensee, Grunewald
 """
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
-from typing import List
+from typing import List, Optional
+from urllib.parse import urlencode
 
 from src.config import Criteria
 from src.models import Listing
 from src.scrapers.base import BaseScraper
+from src.scrapers.geo import in_zielgebiet, extract_stadtteil
 
 logger = logging.getLogger(__name__)
 
-# Bekannte API-Endpunkte (zu verifizieren mit DevTools → Network → XHR)
-_API_URL = "https://inberlinwohnen.de/wp-json/inberlinwohnen/v1/wohnungsfinder"
+_BASE_URL = "https://inberlinwohnen.de"
 _SEARCH_URL = "https://inberlinwohnen.de/wohnungsfinder/"
+
+# Bezirks-Slug für den Filter (aus der Seite ermittelt)
+_BEZIRK_PARAM = "charlottenburg-wilmersdorf"
 
 
 class InBerlinWohnenScraper(BaseScraper):
@@ -31,73 +39,93 @@ class InBerlinWohnenScraper(BaseScraper):
 
     def fetch_listings(self, criteria: Criteria) -> List[Listing]:
         listings: List[Listing] = []
+        page = 1
 
-        # Versuch 1: JSON-API
-        result = self._fetch_api(criteria)
-        if result:
-            return result
+        while True:
+            params = {
+                "bezirk": _BEZIRK_PARAM,
+                "paged": page,
+            }
+            resp = self.get(_SEARCH_URL, params=params)
+            if resp is None:
+                break
 
-        # Versuch 2: HTML-Fallback
-        logger.info("[%s] API nicht verfügbar, versuche HTML-Fallback", self.name)
-        return self._fetch_html(criteria)
+            soup = self.parse(resp.text)
+            cards = self._find_cards(soup)
 
-    def _fetch_api(self, criteria: Criteria) -> List[Listing]:
-        """Versucht die interne WP-REST-API abzufragen."""
-        payload = {
-            "bezirke": [],       # leer = alle Bezirke
-            "zimmer_von": str(int(criteria.zimmer.min)) if criteria.zimmer.min else "",
-            "zimmer_bis": str(int(criteria.zimmer.max)) if criteria.zimmer.max else "",
-            "miete_von": "",
-            "miete_bis": str(int(criteria.preis.warmmiete_max)) if criteria.preis.warmmiete_max else "",
-            "flaeche_von": str(int(criteria.flaeche.min_qm)) if criteria.flaeche.min_qm else "",
-            "flaeche_bis": "",
-        }
+            if not cards:
+                if page == 1:
+                    logger.warning(
+                        "[%s] Keine Karten gefunden. "
+                        "Selektoren bitte mit DevTools auf inberlinwohnen.de prüfen.",
+                        self.name,
+                    )
+                break
 
-        resp = self.get(
-            _API_URL,
-            headers={"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"},
-        )
+            for card in cards:
+                listing = self._parse_card(card)
+                if listing and in_zielgebiet(listing):
+                    listings.append(listing)
 
-        if resp is None:
-            return []
+            # Prüfe ob weitere Seiten existieren
+            next_btn = soup.select_one("a.next, .pagination a[rel='next'], a[aria-label='Nächste Seite']")
+            if not next_btn:
+                break
+            page += 1
+            if page > 30:  # Sicherheitsgrenze
+                break
 
-        try:
-            data = resp.json()
-        except Exception:
-            logger.warning("[%s] API-Antwort ist kein JSON", self.name)
-            return []
-
-        # Struktur variiert — defensiv parsen
-        items = data if isinstance(data, list) else data.get("wohnungen", data.get("results", []))
-        if not items:
-            logger.info("[%s] API liefert 0 Inserate", self.name)
-            return []
-
-        listings = []
-        for item in items:
-            listing = self._parse_api_item(item)
-            if listing:
-                listings.append(listing)
-
-        logger.info("[%s] %d Inserate via API", self.name, len(listings))
+        logger.info("[%s] %d Inserate im Zielgebiet", self.name, len(listings))
         return listings
 
-    def _parse_api_item(self, item: dict) -> Listing | None:
+    def _find_cards(self, soup):
+        """Probiert bekannte Selektoren, gibt die erste funktionierende Liste zurück."""
+        selectors = [
+            ".wohnungsfinder-item",
+            "article.wohnung",
+            ".wf-item",
+            ".immo-item",
+            "li.wohnungsangebot",
+            "div[class*='wohnung']",
+        ]
+        for sel in selectors:
+            cards = soup.select(sel)
+            if cards:
+                logger.debug("[%s] Selektor '%s' → %d Karten", self.name, sel, len(cards))
+                return cards
+        return []
+
+    def _parse_card(self, card) -> Optional[Listing]:
         try:
-            listing_id = str(item.get("id") or item.get("ID") or item.get("expose_id", ""))
-            if not listing_id:
-                return None
+            # Link zur Detailseite
+            link = card.select_one("a[href]")
+            url = link["href"] if link else _SEARCH_URL
+            if url.startswith("/"):
+                url = _BASE_URL + url
 
-            # Feldnamen variieren je nach API-Version
-            titel = item.get("title") or item.get("post_title") or item.get("bezeichnung", "Unbekannt")
-            url = item.get("url") or item.get("link") or item.get("permalink", _SEARCH_URL)
+            # ID aus URL ableiten
+            listing_id = re.sub(r"[^a-z0-9]", "-", url.lower().split("//")[-1])[:80]
 
-            warmmiete = self._to_float(item.get("warmmiete") or item.get("gesamtmiete"))
-            kaltmiete = self._to_float(item.get("kaltmiete") or item.get("nettokaltmiete"))
-            flaeche = self._to_float(item.get("flaeche") or item.get("wohnflaeche"))
-            zimmer = self._to_float(item.get("zimmer") or item.get("zimmeranzahl"))
-            stadtteil = item.get("bezirk") or item.get("stadtteil") or item.get("ortsteil")
-            anbieter = item.get("anbieter") or item.get("gesellschaft", "")
+            # Titel
+            titel_el = card.select_one("h2, h3, .title, .bezeichnung, [class*='title']")
+            titel = titel_el.get_text(strip=True) if titel_el else "Wohnung"
+
+            # Adresse / Stadtteil — aus dem gesamten Kartentext
+            text = card.get_text(" ", strip=True)
+            stadtteil = extract_stadtteil(text + " " + titel)
+
+            # Preis
+            kaltmiete = _extract_price(text, ["Kaltmiete", "Nettokaltmiete"])
+            warmmiete = _extract_price(text, ["Warmmiete", "Gesamtmiete", "Gesamtmiete:"])
+            if warmmiete is None and kaltmiete is None:
+                warmmiete = _first_price(text)
+
+            # Fläche und Zimmer
+            flaeche = _extract_qm(text)
+            zimmer = _extract_zimmer(text)
+
+            # Anbieter (landeseigene)
+            anbieter = _extract_anbieter(url)
 
             return Listing(
                 id=f"ibw-{listing_id}",
@@ -113,66 +141,46 @@ class InBerlinWohnenScraper(BaseScraper):
                 gefunden_am=datetime.now(),
             )
         except Exception as e:
-            logger.debug("[%s] Parse-Fehler: %s — %s", self.name, e, item)
+            logger.debug("[%s] Parse-Fehler: %s", self.name, e)
             return None
 
-    def _fetch_html(self, criteria: Criteria) -> List[Listing]:
-        """HTML-Fallback: parst die Wohnungsfinder-Seite direkt."""
-        resp = self.get(_SEARCH_URL)
-        if resp is None:
-            return []
 
-        soup = self.parse(resp.text)
-        listings = []
+def _extract_anbieter(url: str) -> str:
+    mapping = {
+        "degewo": "degewo", "gesobau": "GESOBAU", "gewobag": "Gewobag",
+        "howoge": "HOWOGE", "stadtundland": "STADT UND LAND", "wbm": "WBM",
+    }
+    for key, name in mapping.items():
+        if key in url.lower():
+            return name
+    return ""
 
-        # Selektoren müssen nach Live-Inspektion ggf. angepasst werden
-        # Typische Struktur: .wohnungsfinder-item oder article.wohnung
-        cards = (
-            soup.select(".wohnungsfinder-item")
-            or soup.select("article.wohnung")
-            or soup.select(".listing-item")
-        )
 
-        if not cards:
-            logger.warning(
-                "[%s] Keine Inserate im HTML gefunden. "
-                "Seite wahrscheinlich JS-gerendert — Playwright nötig.",
-                self.name,
-            )
-            return []
+def _extract_price(text: str, labels: List[str]) -> Optional[float]:
+    for label in labels:
+        m = re.search(rf"{re.escape(label)}[:\s]*([0-9.]+(?:,[0-9]{{2}})?)\s*€?", text, re.IGNORECASE)
+        if m:
+            return _to_float(m.group(1))
+    return None
 
-        for card in cards:
-            listing = self._parse_html_card(card)
-            if listing:
-                listings.append(listing)
 
-        logger.info("[%s] %d Inserate via HTML-Fallback", self.name, len(listings))
-        return listings
+def _first_price(text: str) -> Optional[float]:
+    m = re.search(r"(\d{3,4}(?:[.,]\d{2})?)\s*€", text)
+    return _to_float(m.group(1)) if m else None
 
-    def _parse_html_card(self, card) -> Listing | None:
-        try:
-            link = card.select_one("a[href]")
-            url = link["href"] if link else _SEARCH_URL
-            titel = card.select_one("h2, h3, .title, .bezeichnung")
-            titel_text = titel.get_text(strip=True) if titel else "Unbekannt"
-            listing_id = url.split("/")[-2] if url != _SEARCH_URL else card.get("data-id", "unknown")
-            return Listing(
-                id=f"ibw-html-{listing_id}",
-                portal="inberlinwohnen",
-                url=url,
-                titel=titel_text,
-                stadt="Berlin",
-                gefunden_am=datetime.now(),
-            )
-        except Exception as e:
-            logger.debug("[%s] HTML-Parse-Fehler: %s", self.name, e)
-            return None
 
-    @staticmethod
-    def _to_float(value) -> float | None:
-        if value is None:
-            return None
-        try:
-            return float(str(value).replace(".", "").replace(",", ".").replace("€", "").strip())
-        except (ValueError, TypeError):
-            return None
+def _extract_qm(text: str) -> Optional[float]:
+    m = re.search(r"(\d{2,3}(?:[.,]\d{1,2})?)\s*m²", text, re.IGNORECASE)
+    return _to_float(m.group(1)) if m else None
+
+
+def _extract_zimmer(text: str) -> Optional[float]:
+    m = re.search(r"(\d(?:[.,]\d)?)\s*(?:Zimmer|Zi\.)", text, re.IGNORECASE)
+    return _to_float(m.group(1)) if m else None
+
+
+def _to_float(s: str) -> Optional[float]:
+    try:
+        return float(str(s).replace(".", "").replace(",", ".").strip())
+    except (ValueError, TypeError):
+        return None
