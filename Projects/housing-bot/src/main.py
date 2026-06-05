@@ -34,7 +34,9 @@ from src.models import Listing
 from src.notifications import NotificationService
 from src.scrapers.base import BaseScraper
 from src.scrapers.gesobau import GESOBAUScraper
+from src.scrapers.immowelt import ImmoweltScraper
 from src.scrapers.inberlinwohnen import InBerlinWohnenScraper
+from src.scrapers.kleinanzeigen import KleinanzeigenScraper
 from src.scrapers.mock import MockScraper
 from src.scrapers.vonovia import VonoviaScraper
 from src.scrapers.wbm import WBMScraper
@@ -50,6 +52,8 @@ def build_scrapers(use_mock: bool) -> List[BaseScraper]:
         WBMScraper(),             # Tier 1: WBM direkt
         GESOBAUScraper(),         # Tier 1: GESOBAU direkt
         VonoviaScraper(),         # Tier 1: Vonovia/Deutsche Wohnen (JSON-API)
+        ImmoweltScraper(),        # Tier 2: Immowelt (großes Portal, CW-Ortsteilsuche)
+        KleinanzeigenScraper(),   # Tier 2: Kleinanzeigen (private + Makler)
     ]
 
 
@@ -77,6 +81,8 @@ def run_one_off_search(criteria: dict) -> List[dict]:
         VonoviaScraper(),
         WBMScraper(),
         GESOBAUScraper(),
+        ImmoweltScraper(),
+        KleinanzeigenScraper(),
         InBerlinWohnenScraper(page_limit=4),
     ]
     yaml_criteria = load_criteria()
