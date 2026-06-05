@@ -1,11 +1,14 @@
 """WBM — Wohnungsbaugesellschaft Berlin-Mitte.
 
-Technischer Befund (Live-Prüfung 2026-06-05):
-  - Korrekte URL: https://www.wbm.de/wohnungen-berlin/angebote/
-  - Server-seitig gerendert
-  - Listing-Struktur: Adresse als Heading, Zimmer/Fläche/Warmmiete als Bullet Points
-  - Detail-Links: /wohnungen-berlin/angebote/details/[slug]/
-  - Aktuell wenige Angebote in CW, aber pollbar
+Technischer Befund (Live-Analyse 2026-06-05):
+  - URL: https://www.wbm.de/wohnungen-berlin/angebote/
+  - Server-seitig gerendert, 15 Angebote
+  - Listing-Container: article.immo-element
+  - Preis: direkt als Text "1.558,04 €\\nWarmmiete"
+  - Größe: "94,92 m²\\nGröße"
+  - Zimmer: "3\\nZimmer"
+  - Detail-Link: a[href*='/angebote/details/']
+  - Aktuell 0 Angebote in CW (Schwerpunkt Spandau/Lichtenberg)
 
 Geografischer Filter: geo.py
 """
@@ -36,23 +39,10 @@ class WBMScraper(BaseScraper):
             return []
 
         soup = self.parse(resp.text)
-
-        # WBM-Selektoren (aus Live-Analyse)
-        cards = (
-            soup.select("li.wbm-expose")
-            or soup.select(".wbm-expose-list li")
-            or soup.select("article.wbm-expose")
-            or soup.select(".immolist li")
-            or soup.select("ul.wohnungen li")
-            or [el for el in soup.select("li") if "zimmer" in el.get_text(strip=True).lower()]
-        )
+        cards = soup.select("article.immo-element")
 
         if not cards:
-            logger.warning(
-                "[%s] Keine Inserate gefunden auf %s. "
-                "Selektoren bitte mit DevTools prüfen.",
-                self.name, _SEARCH_URL,
-            )
+            logger.warning("[%s] Keine article.immo-element gefunden auf %s", self.name, _SEARCH_URL)
             return []
 
         listings = []
@@ -67,26 +57,34 @@ class WBMScraper(BaseScraper):
     def _parse_card(self, card) -> Optional[Listing]:
         try:
             # Detail-Link
-            link = card.select_one("a[href*='/angebote/']") or card.select_one("a[href]")
-            if not link:
-                return None
-            href = link["href"]
+            link = card.select_one("a[href*='/angebote/details/']") or card.select_one("a[href]")
+            href = link["href"] if link else ""
             url = (_BASE_URL + href) if href.startswith("/") else href
-            listing_id = url.rstrip("/").split("/")[-1] or re.sub(r"\W", "-", url)[-60:]
+            listing_id = url.rstrip("/").split("/")[-1].split("?")[-1][:60] or re.sub(r"\W", "-", url)[-50:]
 
-            # Adresse als Titel (WBM zeigt Adresse als Hauptüberschrift)
-            titel_el = card.select_one("h2, h3, h4, .address, [class*='address'], [class*='title']")
+            # Titel (z.B. "3-Zimmer-Wohnung in Spandau")
+            titel_el = card.select_one("h2, h3, .textWrap h2, .textWrap h3")
             titel = titel_el.get_text(strip=True) if titel_el else "WBM Wohnung"
 
-            text = card.get_text(" ", strip=True)
-            stadtteil = extract_stadtteil(titel + " " + text)
+            # Adresse
+            addr_el = card.select_one(".address, .adresse, address, [class*='address']")
+            addr_text = addr_el.get_text(strip=True) if addr_el else ""
+            stadtteil = extract_stadtteil(titel + " " + addr_text)
 
-            # Warmmiete (WBM nennt "Warmmiete" explizit)
-            warmmiete = _extract_price(text, ["Warmmiete", "Gesamtmiete"])
-            kaltmiete = _extract_price(text, ["Kaltmiete", "Nettokaltmiete"])
+            # Gesamten Text für Regex-Extraktion
+            full_text = card.get_text(" ", strip=True)
 
-            flaeche = _extract_qm(text)
-            zimmer = _extract_zimmer(text)
+            # Warmmiete: "1.558,04 € Warmmiete" oder "Warmmiete 1.558,04 €"
+            warmmiete = _price_near_label(full_text, "Warmmiete")
+            kaltmiete = _price_near_label(full_text, "Kaltmiete")
+
+            # Fläche: "94,92 m² Größe"
+            flaeche_m = re.search(r"([\d]+[.,][\d]+)\s*m²", full_text)
+            flaeche = _to_float(flaeche_m.group(1)) if flaeche_m else None
+
+            # Zimmer: "3 Zimmer" oder "Zimmer 3"
+            zimmer_m = re.search(r"(\d(?:[.,]\d)?)\s*Zimmer|Zimmer\s*(\d(?:[.,]\d)?)", full_text)
+            zimmer = _to_float((zimmer_m.group(1) or zimmer_m.group(2))) if zimmer_m else None
 
             return Listing(
                 id=f"wbm-{listing_id}",
@@ -106,25 +104,22 @@ class WBMScraper(BaseScraper):
             return None
 
 
-def _extract_price(text: str, labels: List[str]) -> Optional[float]:
-    for label in labels:
-        m = re.search(rf"{re.escape(label)}[:\s]*([0-9.]+(?:,[0-9]{{2}})?)\s*€?", text, re.IGNORECASE)
+def _price_near_label(text: str, label: str) -> Optional[float]:
+    patterns = [
+        rf"([\d.]+,\d{{2}})\s*€\s*{label}",
+        rf"{label}\s*([\d.]+,\d{{2}})\s*€",
+        rf"{label}[:\s]+([\d.]+,\d{{2}})",
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
         if m:
             return _to_float(m.group(1))
     return None
 
 
-def _extract_qm(text: str) -> Optional[float]:
-    m = re.search(r"(\d{2,3}(?:[.,]\d{1,2})?)\s*m²", text, re.IGNORECASE)
-    return _to_float(m.group(1)) if m else None
-
-
-def _extract_zimmer(text: str) -> Optional[float]:
-    m = re.search(r"(\d(?:[.,]\d)?)\s*(?:Zimmer|Zi\.)", text, re.IGNORECASE)
-    return _to_float(m.group(1)) if m else None
-
-
-def _to_float(s: str) -> Optional[float]:
+def _to_float(s: Optional[str]) -> Optional[float]:
+    if not s:
+        return None
     try:
         return float(str(s).replace(".", "").replace(",", ".").strip())
     except (ValueError, TypeError):
