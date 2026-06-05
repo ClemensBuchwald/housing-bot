@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Abhängigkeiten installieren (separate Schicht für besseres Caching)
 COPY pyproject.toml .
-RUN pip install --no-cache-dir pydantic pyyaml httpx python-dotenv
+RUN pip install --no-cache-dir pydantic pyyaml httpx python-dotenv beautifulsoup4 lxml
 
 # Quellcode
 COPY src/ ./src/
