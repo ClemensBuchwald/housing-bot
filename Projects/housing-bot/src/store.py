@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS mandates (
 );
 
 CREATE INDEX IF NOT EXISTS idx_mandates_state ON mandates(state);
+
+CREATE TABLE IF NOT EXISTS chat_history (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    TEXT NOT NULL,
+    role       TEXT NOT NULL,    -- user | assistant
+    content    TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_history_chat ON chat_history(chat_id, id);
 """
 
 
@@ -276,6 +286,24 @@ class Store:
             ),
         )
         self._conn.commit()
+
+    # --- Chat-Verlauf (überlebt Neustarts) ---
+
+    def append_chat(self, chat_id: str, role: str, content: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO chat_history (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                (chat_id, role, content, datetime.now().isoformat()),
+            )
+            self._conn.commit()
+
+    def get_chat_history(self, chat_id: str, limit: int = 24) -> List[dict]:
+        rows = self._conn.execute(
+            "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            (chat_id, limit),
+        ).fetchall()
+        # chronologisch zurückgeben (älteste zuerst)
+        return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
     def close(self) -> None:
         self._conn.close()
