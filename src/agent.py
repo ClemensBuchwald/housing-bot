@@ -54,7 +54,9 @@ GEPRÜFT und nur die passenden automatisch als einzelne Nachrichten mit Bewertun
 (Score, Vor-/Nachteile) und Link an den Chat gesendet. Zähl die Treffer NICHT selbst auf,
 gib KEINE Links/Details wieder, fordere den Nutzer NICHT auf selbst zu prüfen —
 sag nur kurz, wie viele geprüfte Treffer du geschickt hast (z. B. "Ich habe 4 passende
-Angebote geprüft und geschickt ⤴" oder "Gerade nichts dabei, das wirklich passt")."""
+Angebote geprüft und geschickt ⤴" oder "Gerade nichts dabei, das wirklich passt").
+Standardmäßig zeigst du nur NEUE Angebote. Wenn der Nutzer "zeig mir alle", "nochmal alle"
+oder "auch die schon gesehenen" sagt, setze auch_bereits_gesehene=true."""
 
 
 TOOLS = [
@@ -106,6 +108,14 @@ TOOLS = [
                 "zimmer_min": {"type": ["number", "null"]},
                 "zimmer_max": {"type": ["number", "null"]},
                 "flaeche_min": {"type": ["number", "null"]},
+                "auch_bereits_gesehene": {
+                    "type": "boolean",
+                    "description": (
+                        "false (Standard) = nur NEUE, noch nicht gezeigte Angebote. "
+                        "true = ALLE passenden inkl. bereits gezeigter — setze das, wenn der "
+                        "Nutzer 'zeig mir alle', 'nochmal alle', 'auch die schon gesehenen' o.ä. sagt."
+                    ),
+                },
             },
         },
     },
@@ -308,11 +318,13 @@ class ConversationAgent:
         if name == "jetzt_angebote_suchen":
             if not self.search_fn:
                 return json.dumps({"status": "nicht_verfuegbar"})
-            criteria = {k: v for k, v in args.items() if v is not None}
+            include_seen = bool(args.get("auch_bereits_gesehene", False))
+            criteria = {k: v for k, v in args.items()
+                        if v is not None and k != "auch_bereits_gesehene"}
             # Aktiven Auftrag mitgeben, damit die KI gegen die echten Kriterien bewertet
             mandate = self.store.get_active_mandate(chat_id)
             try:
-                treffer = self.search_fn(criteria, mandate)
+                treffer = self.search_fn(criteria, mandate, include_seen=include_seen)
             except Exception as e:
                 logger.exception("On-Demand-Suche fehlgeschlagen: %s", e)
                 return json.dumps({"status": "fehler"})

@@ -79,11 +79,15 @@ def _passes_basic(listing: Listing, crit: dict) -> bool:
     return True
 
 
-def run_one_off_search(criteria: dict, mandate: Optional[dict] = None, store: "Optional[Store]" = None) -> List[dict]:
+def run_one_off_search(criteria: dict, mandate: Optional[dict] = None,
+                       store: "Optional[Store]" = None, include_seen: bool = False) -> List[dict]:
     """Einmalige Live-Abfrage MIT KI-Bewertung gegen den Auftrag.
 
     Ablauf: scrapen → Grobfilter (Preis/Zimmer/Fläche) → bereits Gesehenes überspringen
-    → KI bewertet jeden Kandidaten → nur passende, nach Score sortiert → als gesehen merken.
+    (außer include_seen=True) → KI bewertet jeden Kandidaten → nur passende, nach Score
+    sortiert → als gesehen merken.
+
+    include_seen=True: zeigt ALLE passenden inkl. bereits gezeigter ("zeig mir nochmal alle").
     """
     scrapers: List[BaseScraper] = [
         VonoviaScraper(),
@@ -107,8 +111,8 @@ def run_one_off_search(criteria: dict, mandate: Optional[dict] = None, store: "O
         for l in listings:
             if not _passes_basic(l, criteria):
                 continue
-            # Bereits Gesehenes (aus Dauersuche ODER früherer Sofort-Abfrage) überspringen
-            if store and store.is_known(l.id, l.portal):
+            # Bereits Gesehenes überspringen — außer der Nutzer will explizit ALLE
+            if store and not include_seen and store.is_known(l.id, l.portal):
                 continue
             candidates.append(l)
 
