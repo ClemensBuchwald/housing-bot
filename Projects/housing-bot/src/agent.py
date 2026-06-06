@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Dict, List
 
 import anthropic
@@ -151,8 +152,11 @@ def format_treffer_block(t: dict) -> str:
     titel = (t.get("titel") or "").strip()
     url = t.get("url") or ""
 
+    # Fakten-Titel (nur Zimmer/m²/Ort) nicht doppelt zeigen
+    titel_ist_fakten = bool(re.search(r"\d\s*Zi", titel)) and "m²" in titel
+
     lines = [f"🏢 {quelle}"]
-    if titel and titel.lower() not in zeile2.lower():
+    if titel and not titel_ist_fakten and titel.lower() not in zeile2.lower():
         lines.append(titel[:70])
     lines.append(zeile2)
     lines.append(preis)
