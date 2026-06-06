@@ -46,13 +46,14 @@ class ImmoweltScraper(BaseScraper):
             if resp is None:
                 continue
             soup = self.parse(resp.text)
-            cards = soup.select('[data-testid="cardmfe-container--test-id"]')
-            if not cards:
-                logger.debug("[%s] Keine Karten auf %s", self.name, url)
+            # Anker = Covering-Link (trägt den /expose/-Link); Daten im Parent-Container
+            links = soup.select('a[data-testid="card-mfe-covering-link-testid"]')
+            if not links:
+                logger.debug("[%s] Keine Covering-Links auf %s", self.name, url)
                 continue
 
-            for card in cards:
-                listing = self._parse_card(card)
+            for link in links:
+                listing = self._parse_card(link)
                 if listing and listing.id not in seen_ids and in_zielgebiet(listing):
                     seen_ids.add(listing.id)
                     all_listings.append(listing)
@@ -60,15 +61,17 @@ class ImmoweltScraper(BaseScraper):
         logger.info("[%s] %d Inserate im Zielgebiet CW", self.name, len(all_listings))
         return all_listings
 
-    def _parse_card(self, card) -> Optional[Listing]:
+    def _parse_card(self, link) -> Optional[Listing]:
         try:
-            text = card.get_text(" ", strip=True)
-
-            # Detail-Link (/expose/...)
-            link = card.select_one('a[href*="/expose/"]')
-            href = link["href"] if link else ""
+            # link = das Covering-<a> mit /expose/-href; Daten stehen im Parent
+            href = link.get("href", "")
             url = (_BASE_URL + href) if href.startswith("/") else href
             m_id = re.search(r"/expose/([a-z0-9-]+)", href)
+
+            container = link.parent or link
+            cont = container.select_one('[data-testid="cardmfe-container--test-id"]') or container
+            text = cont.get_text(" ", strip=True)
+
             listing_id = m_id.group(1) if m_id else re.sub(r"\W", "", text[:30])
 
             # Ort: "Charlottenburg, Berlin (10623)"
@@ -87,10 +90,14 @@ class ImmoweltScraper(BaseScraper):
 
             titel = f"{int(zimmer) if zimmer else '?'} Zi · {flaeche or '?'} m² · {stadtteil or 'Berlin'}"
 
+            # Kein gültiger Expose-Link → Inserat überspringen (keine Basis-URL-Fallbacks)
+            if "/expose/" not in url:
+                return None
+
             return Listing(
                 id=f"immowelt-{listing_id}",
                 portal="immowelt",
-                url=url or _BASE_URL,
+                url=url,
                 titel=titel,
                 stadt="Berlin",
                 stadtteil=stadtteil,
