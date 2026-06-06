@@ -11,6 +11,7 @@ Starten:
 from __future__ import annotations
 
 import argparse
+import functools
 import logging
 import os
 import threading
@@ -78,11 +79,11 @@ def _passes_basic(listing: Listing, crit: dict) -> bool:
     return True
 
 
-def run_one_off_search(criteria: dict, mandate: Optional[dict] = None) -> List[dict]:
+def run_one_off_search(criteria: dict, mandate: Optional[dict] = None, store: "Optional[Store]" = None) -> List[dict]:
     """Einmalige Live-Abfrage MIT KI-Bewertung gegen den Auftrag.
 
-    Ablauf: scrapen → Grobfilter (Preis/Zimmer/Fläche) → KI bewertet jeden Kandidaten
-    gegen den Auftrag (Vor-/Nachteile, Score) → nur passende, nach Score sortiert.
+    Ablauf: scrapen → Grobfilter (Preis/Zimmer/Fläche) → bereits Gesehenes überspringen
+    → KI bewertet jeden Kandidaten → nur passende, nach Score sortiert → als gesehen merken.
     """
     scrapers: List[BaseScraper] = [
         VonoviaScraper(),
@@ -104,11 +105,15 @@ def run_one_off_search(criteria: dict, mandate: Optional[dict] = None) -> List[d
             logger.exception("On-Demand: Fehler bei %s", scraper.name)
             continue
         for l in listings:
-            if _passes_basic(l, criteria):
-                candidates.append(l)
+            if not _passes_basic(l, criteria):
+                continue
+            # Bereits Gesehenes (aus Dauersuche ODER früherer Sofort-Abfrage) überspringen
+            if store and store.is_known(l.id, l.portal):
+                continue
+            candidates.append(l)
 
     candidates = candidates[:12]  # KI-Budget begrenzen
-    logger.info("On-Demand: %d Kandidaten → KI-Bewertung", len(candidates))
+    logger.info("On-Demand: %d neue Kandidaten → KI-Bewertung", len(candidates))
 
     # 2) KI-Bewertung gegen den Auftrag
     eval_mandate = mandate or {"raw_text": _criteria_to_text(criteria), "structured": criteria}
@@ -121,6 +126,14 @@ def run_one_off_search(criteria: dict, mandate: Optional[dict] = None) -> List[d
             continue
         if not ev.passt or ev.score < 40:
             continue
+        # Als gesehen/gemeldet merken → kein Doppel in Dauersuche oder nächster Sofort-Abfrage
+        if store:
+            try:
+                store.save_listing(l)
+                store.save_evaluation(l.id, l.portal, (mandate or {}).get("id", 0), ev.__dict__)
+                store.mark_notified(l.id, l.portal)
+            except Exception:
+                logger.debug("On-Demand: Persistenz fehlgeschlagen für %s", l.id, exc_info=True)
         treffer.append({
             "titel": l.titel,
             "ort": l.stadtteil or l.stadt,
@@ -258,7 +271,8 @@ def main() -> None:
     store = Store()
     notifier = NotificationService()
     # On-Demand-Suche nur im echten Betrieb (nicht im Mock-Modus)
-    search_fn = None if args.mock else run_one_off_search
+    # Sofort-Suche mit Store verbinden (Dedup + Persistenz der gezeigten Treffer)
+    search_fn = None if args.mock else functools.partial(run_one_off_search, store=store)
     tg_handler = TelegramHandler(store, search_fn=search_fn)
 
     logger.info(

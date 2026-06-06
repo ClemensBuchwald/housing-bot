@@ -198,9 +198,17 @@ class ConversationAgent:
 
     def handle(self, chat_id: str, text: str) -> str:
         """Verarbeitet eine Nutzernachricht und gibt die Antwort zurück."""
-        history = self._histories.setdefault(chat_id, [])
+        # Verlauf beim ersten Mal aus dem Store laden (überlebt Neustarts)
+        if chat_id not in self._histories:
+            try:
+                self._histories[chat_id] = self.store.get_chat_history(chat_id, limit=_MAX_HISTORY)
+            except Exception:
+                self._histories[chat_id] = []
+
+        history = self._histories[chat_id]
         history.append({"role": "user", "content": text})
         self._trim(history)
+        self._persist(chat_id, "user", text)
 
         try:
             reply = self._run(chat_id, history)
@@ -210,7 +218,14 @@ class ConversationAgent:
 
         history.append({"role": "assistant", "content": reply})
         self._trim(history)
+        self._persist(chat_id, "assistant", reply)
         return reply
+
+    def _persist(self, chat_id: str, role: str, content: str) -> None:
+        try:
+            self.store.append_chat(chat_id, role, content)
+        except Exception:
+            logger.debug("Chat-Persistenz fehlgeschlagen", exc_info=True)
 
     def _run(self, chat_id: str, history: List[dict]) -> str:
         client = _client()
