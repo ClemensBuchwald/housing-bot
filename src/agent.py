@@ -49,10 +49,12 @@ passende Treffer mit Vor- und Nachteilen samt Empfehlung.
 
 Halt dich kurz — das ist ein Telegram-Chat, kein Brief. Emojis sparsam, wenn sie passen.
 
-WICHTIG bei `jetzt_angebote_suchen`: Die gefundenen Angebote werden bereits AUTOMATISCH
-als einzelne Nachrichten mit Links an den Chat gesendet. Zähl die Treffer NICHT selbst auf
-und gib KEINE Links wieder — sag nur kurz, wie viele Treffer du geschickt hast (z. B.
-"Hier sind 4 aktuelle Angebote ⤴" oder "Gerade keine passenden Angebote gefunden")."""
+WICHTIG bei `jetzt_angebote_suchen`: Die Angebote werden bereits gegen die Kriterien
+GEPRÜFT und nur die passenden automatisch als einzelne Nachrichten mit Bewertung
+(Score, Vor-/Nachteile) und Link an den Chat gesendet. Zähl die Treffer NICHT selbst auf,
+gib KEINE Links/Details wieder, fordere den Nutzer NICHT auf selbst zu prüfen —
+sag nur kurz, wie viele geprüfte Treffer du geschickt hast (z. B. "Ich habe 4 passende
+Angebote geprüft und geschickt ⤴" oder "Gerade nichts dabei, das wirklich passt")."""
 
 
 TOOLS = [
@@ -151,15 +153,28 @@ def format_treffer_block(t: dict) -> str:
 
     titel = (t.get("titel") or "").strip()
     url = t.get("url") or ""
+    score = t.get("score")
 
     # Fakten-Titel (nur Zimmer/m²/Ort) nicht doppelt zeigen
     titel_ist_fakten = bool(re.search(r"\d\s*Zi", titel)) and "m²" in titel
 
-    lines = [f"🏢 {quelle}"]
+    kopf = f"🏢 {quelle}"
+    if score is not None:
+        kopf += f"  ·  Score {score}/100"
+
+    lines = [kopf]
     if titel and not titel_ist_fakten and titel.lower() not in zeile2.lower():
         lines.append(titel[:70])
     lines.append(zeile2)
     lines.append(preis)
+
+    for v in (t.get("vorteile") or [])[:2]:
+        lines.append(f"✅ {v}")
+    for n in (t.get("nachteile") or [])[:2]:
+        lines.append(f"⚠️ {n}")
+    if t.get("empfehlung"):
+        lines.append(f"→ {t['empfehlung']}")
+
     if url:
         lines.append(url)  # bare URL → klickbar + Telegram-Vorschau
     return "\n".join(lines)
@@ -279,8 +294,10 @@ class ConversationAgent:
             if not self.search_fn:
                 return json.dumps({"status": "nicht_verfuegbar"})
             criteria = {k: v for k, v in args.items() if v is not None}
+            # Aktiven Auftrag mitgeben, damit die KI gegen die echten Kriterien bewertet
+            mandate = self.store.get_active_mandate(chat_id)
             try:
-                treffer = self.search_fn(criteria)
+                treffer = self.search_fn(criteria, mandate)
             except Exception as e:
                 logger.exception("On-Demand-Suche fehlgeschlagen: %s", e)
                 return json.dumps({"status": "fehler"})

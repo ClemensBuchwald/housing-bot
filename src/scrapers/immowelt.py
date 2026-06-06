@@ -94,6 +94,22 @@ class ImmoweltScraper(BaseScraper):
             if "/expose/" not in url:
                 return None
 
+            # Merkmale für die KI-Bewertung anreichern (aus dem Kachel-Text)
+            merkmale = []
+            if plz:
+                merkmale.append(f"PLZ:{plz}")
+            etage_m = re.search(r"(\d+)\.\s*(?:Geschoss|OG|Obergeschoss)", text)
+            if etage_m:
+                merkmale.append(f"Etage:{etage_m.group(1)}. OG")
+            elif re.search(r"\bErdgeschoss\b|Hochparterre", text, re.IGNORECASE):
+                merkmale.append("Etage:Erdgeschoss/Hochparterre")
+            adr_m = re.search(r"([A-ZÄÖÜ][a-zäöüß.\-]+(?:str(?:aße|\.)|damm|allee|platz|weg|ring)\.?\s*\d+[a-z]?)", text)
+            if adr_m:
+                merkmale.append(f"Adresse:{adr_m.group(1).strip()}")
+            beschr_m = re.search(r"Objektbeschreibung\s*(.+)$", text)
+            snippet = (beschr_m.group(1) if beschr_m else text)[:350]
+            merkmale.append(f"Beschreibung:{snippet}")
+
             return Listing(
                 id=f"immowelt-{listing_id}",
                 portal="immowelt",
@@ -105,7 +121,7 @@ class ImmoweltScraper(BaseScraper):
                 warmmiete=warmmiete,
                 flaeche=flaeche,
                 zimmer=zimmer,
-                merkmale=[f"PLZ:{plz}"] if plz else [],
+                merkmale=merkmale,
                 gefunden_am=datetime.now(),
             )
         except Exception as e:

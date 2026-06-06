@@ -78,10 +78,11 @@ def _passes_basic(listing: Listing, crit: dict) -> bool:
     return True
 
 
-def run_one_off_search(criteria: dict) -> List[dict]:
-    """Einmalige Live-Abfrage ohne Auftrag/Persistenz. Gibt kompakte Treffer zurück.
+def run_one_off_search(criteria: dict, mandate: Optional[dict] = None) -> List[dict]:
+    """Einmalige Live-Abfrage MIT KI-Bewertung gegen den Auftrag.
 
-    Nutzt schnelle Quellen + inberlinwohnen mit Seitenlimit, damit es zügig geht.
+    Ablauf: scrapen → Grobfilter (Preis/Zimmer/Fläche) → KI bewertet jeden Kandidaten
+    gegen den Auftrag (Vor-/Nachteile, Score) → nur passende, nach Score sortiert.
     """
     scrapers: List[BaseScraper] = [
         VonoviaScraper(),
@@ -93,7 +94,9 @@ def run_one_off_search(criteria: dict) -> List[dict]:
         InBerlinWohnenScraper(page_limit=4),
     ]
     yaml_criteria = load_criteria()
-    treffer: List[dict] = []
+
+    # 1) Kandidaten einsammeln + Grobfilter
+    candidates: List[Listing] = []
     for scraper in scrapers:
         try:
             listings = scraper.fetch_listings(yaml_criteria)
@@ -101,20 +104,58 @@ def run_one_off_search(criteria: dict) -> List[dict]:
             logger.exception("On-Demand: Fehler bei %s", scraper.name)
             continue
         for l in listings:
-            if not _passes_basic(l, criteria):
-                continue
-            treffer.append({
-                "titel": l.titel,
-                "ort": l.stadtteil or l.stadt,
-                "warmmiete": l.warmmiete,
-                "kaltmiete": l.kaltmiete,
-                "flaeche": l.flaeche,
-                "zimmer": l.zimmer,
-                "quelle": l.portal,
-                "url": l.url,
-            })
-    logger.info("On-Demand-Suche: %d Treffer", len(treffer))
-    return treffer[:10]  # max 10 für eine lesbare Nachricht
+            if _passes_basic(l, criteria):
+                candidates.append(l)
+
+    candidates = candidates[:12]  # KI-Budget begrenzen
+    logger.info("On-Demand: %d Kandidaten → KI-Bewertung", len(candidates))
+
+    # 2) KI-Bewertung gegen den Auftrag
+    eval_mandate = mandate or {"raw_text": _criteria_to_text(criteria), "structured": criteria}
+    treffer: List[dict] = []
+    for l in candidates:
+        try:
+            ev = evaluate_listing(l, eval_mandate)
+        except Exception:
+            logger.exception("On-Demand: Bewertung fehlgeschlagen für %s", l.id)
+            continue
+        if not ev.passt or ev.score < 40:
+            continue
+        treffer.append({
+            "titel": l.titel,
+            "ort": l.stadtteil or l.stadt,
+            "warmmiete": l.warmmiete,
+            "kaltmiete": l.kaltmiete,
+            "flaeche": l.flaeche,
+            "zimmer": l.zimmer,
+            "quelle": l.portal,
+            "url": l.url,
+            "score": ev.score,
+            "vorteile": ev.vorteile[:2],
+            "nachteile": (ev.nachteile or ev.offene_punkte)[:2],
+            "empfehlung": ev.empfehlung,
+        })
+
+    treffer.sort(key=lambda t: -t["score"])
+    logger.info("On-Demand: %d passende Treffer nach KI-Bewertung", len(treffer))
+    return treffer[:8]
+
+
+def _criteria_to_text(c: dict) -> str:
+    parts = []
+    if c.get("zielorte"):
+        parts.append("in " + " oder ".join(c["zielorte"]))
+    if c.get("zimmer_min"):
+        parts.append(f"ab {c['zimmer_min']} Zimmer")
+    if c.get("flaeche_min"):
+        parts.append(f"ab {c['flaeche_min']} m²")
+    if c.get("warmmiete_max"):
+        parts.append(f"max {c['warmmiete_max']} € warm")
+    if c.get("ausschlusskriterien"):
+        parts.append("ohne: " + ", ".join(c["ausschlusskriterien"]))
+    if c.get("wunschkriterien"):
+        parts.append("Wunsch: " + ", ".join(c["wunschkriterien"]))
+    return "Wohnungssuche " + ", ".join(parts) if parts else "Wohnungssuche"
 
 
 def run_scraping_cycle(
