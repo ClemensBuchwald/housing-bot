@@ -58,6 +58,11 @@ class BrowserScraper(BaseScraper):
     def parse(self, page_html: str, url: str) -> List[Listing]:
         ...
 
+    def interact(self, page) -> None:
+        """Optionaler Hook: Interaktionen vor dem Auslesen (z.B. Suchfeld füllen).
+        Subklassen überschreiben dies bei Bedarf. Standard: nichts tun."""
+        return None
+
     def fetch_listings(self, criteria: Criteria) -> List[Listing]:
         try:
             from playwright.sync_api import sync_playwright  # lazy
@@ -117,6 +122,11 @@ class BrowserScraper(BaseScraper):
             try:
                 page.set_default_timeout(self.wait_timeout_ms)
                 page.goto(url, timeout=self.nav_timeout_ms, wait_until="domcontentloaded")
+                # Optionale Interaktion (z.B. Ort ins Suchfeld eingeben)
+                try:
+                    self.interact(page)
+                except Exception as e:
+                    logger.info("[%s] interact() Hinweis: %s", self.name, e)
                 if self.wait_selector:
                     try:
                         page.wait_for_selector(self.wait_selector, timeout=self.wait_timeout_ms)
