@@ -4,8 +4,6 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     restart: unless-stopped
-    # Chromium braucht mehr Shared Memory als Docker-Default (64 MB)
-    shm_size: "1gb"
     env_file:
       - .env
     volumes:
