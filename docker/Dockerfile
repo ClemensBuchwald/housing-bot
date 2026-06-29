@@ -7,17 +7,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Browser an festen, für alle User lesbaren Ort installieren
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-
 # Python-Abhängigkeiten (separate Schicht für besseres Caching)
 COPY pyproject.toml .
 RUN pip install --no-cache-dir \
-    pydantic pyyaml httpx python-dotenv beautifulsoup4 lxml anthropic playwright
+    pydantic pyyaml httpx python-dotenv beautifulsoup4 lxml anthropic
 
-# Chromium + System-Dependencies für Playwright (JS-Quellen).
-# Vergrößert das Image (~400 MB), ist aber reproduzierbar und wartbar.
-RUN playwright install --with-deps chromium
+# Hinweis: Playwright/Chromium ist aktuell NICHT installiert — es gibt derzeit
+# keine aktive JS-Quelle, die ihn rechtfertigt (Heimstaden=IS24-Duplikat,
+# GCP=0 CW-Ausbeute). browser_base.py importiert Playwright lazy: fehlt es,
+# werden JS-Quellen sauber übersprungen. Bei echter JS-Quelle wieder ergänzen:
+#   RUN pip install --no-cache-dir playwright && playwright install --with-deps chromium
 
 # Quellcode
 COPY src/ ./src/

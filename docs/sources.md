@@ -9,7 +9,6 @@ Stand: 2026-06-05 · Zielgebiet: Charlottenburg, Wilmersdorf, Halensee, Grunewal
 | **inberlinwohnen.de** | Aggregator (6 Landeseigene) | Server-HTML | `div.results__row` | Adresse+PLZ |
 | **degewo** | Landeseigen | Server-HTML (TYPO3/tx_openimmo) | `div.c-teaser--apartment` | Titel/Straße |
 | **ImmoScout24** | Größtes Portal | **Mobile-API (JSON)** | `/search` + CW-Geocodes | address.line |
-| **Heimstaden** | Privat | **JS — Playwright** | diagnose-first | Text/PLZ |
 | **WBM** | Landeseigen | Server-HTML | `article.immo-element` | Titel/Adresse |
 | **GESOBAU** | Landeseigen | Server-HTML | `article`/Expose | Text |
 | **Gewobag** | Landeseigen | Server-HTML | `article.angebot-big-box.gw-offer` | Adresse+PLZ |
@@ -45,16 +44,24 @@ Listings als JSON inkl. Expose-Direktlink — als HTML-/API-Scraper gebaut.
 URL-Pfad getestet). Tatsächlich ist `immosuche.degewo.de/immosuche` server-seitig
 gerendert (TYPO3) → als HTML-Scraper gebaut, **kein Playwright nötig**.
 
-## JS-Quellen via Playwright-Basis (`browser_base.py`)
+## Playwright-Basis (`browser_base.py`) — vorhanden, aber AKTUELL keine aktive JS-Quelle
 
-Wiederverwendbare Headless-Chromium-Basis für echte JS-Quellen:
+Die wiederverwendbare Headless-Chromium-Basis (inkl. `interact()`-Hook) bleibt im Repo.
+Chromium ist im Docker-Image **nicht** installiert (kein aktiver Bedarf); bei echter
+JS-Quelle Dockerfile-Zeile + `pip install -e .[browser]` reaktivieren.
 
-| Quelle | Status |
-|--------|--------|
-| **Heimstaden** | erste JS-Quelle, diagnose-first (Selektoren via Server-Logs fixieren) |
-| **Grand City Property (GCP)** | JS, Playwright + Ortssuche-Interaktion; reiche Kacheldaten (Etage/Balkon/Wanne) |
-| WG-Gesucht | Kandidat für Playwright-Basis (anti-scraping) |
-| Engel & Völkers, von Poll | Kandidaten (SPA / Bot-Schutz) |
+**Lokal validiert (2026-06) — beide JS-Kandidaten verworfen:**
+
+| Quelle | Befund | Verdikt |
+|--------|--------|---------|
+| **Heimstaden** | lädt Listings per **iframe von `portal.immobilienscout24.de`** → ist ein IS24-Widget | **Duplikat von IS24** — deaktiviert |
+| **Grand City Property (GCP)** | Filter über Playwright nicht zuverlässig (Cookie-Banner, unsichtbarer Submit), keine Pagination, **0 CW** in zugänglicher Ansicht | fragil + 0 Ausbeute — deaktiviert |
+
+Code (`heimstaden.py`, `gcp.py`) bleibt als Referenz im Repo, ist aber nicht in der
+Pipeline aktiv.
+
+**Künftige Kandidaten (falls je nötig):** WG-Gesucht, Engel & Völkers, von Poll —
+alle JS/Bot-Schutz, nur über die Playwright-Basis sinnvoll.
 
 ## Regionale Quellen geprüft (Phase 4) — bewusst NICHT gebaut
 
