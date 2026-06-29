@@ -52,8 +52,18 @@ Wiederverwendbare Headless-Chromium-Basis für echte JS-Quellen:
 | Quelle | Status |
 |--------|--------|
 | **Heimstaden** | erste JS-Quelle, diagnose-first (Selektoren via Server-Logs fixieren) |
+| **Grand City Property (GCP)** | JS, Playwright + Ortssuche-Interaktion; reiche Kacheldaten (Etage/Balkon/Wanne) |
 | WG-Gesucht | Kandidat für Playwright-Basis (anti-scraping) |
 | Engel & Völkers, von Poll | Kandidaten (SPA / Bot-Schutz) |
+
+## Regionale Quellen geprüft (Phase 4) — bewusst NICHT gebaut
+
+| Quelle | Grund |
+|--------|-------|
+| **Berlinovo** (landeseigen) | „möbliert / auf Zeit / temporär" → gehört in den separaten **Wohnen-auf-Zeit-Kanal**, nicht in den Dauermiete-Stream |
+| **Akelius** | tiefe Angular-SPA, keine offene API, minimale Berlin-Ausbeute → Aufwand/Nutzen schlecht |
+| **Berliner Spar- u. Bauverein, WG Charlottenburg-Nord** | Genossenschaften ohne Live-Mietfeed → Bestandsquellen |
+| **Covivio** | Domain nicht auflösbar |
 
 Infra: Dockerfile installiert Chromium (`playwright install --with-deps chromium`,
 ~400 MB), compose setzt `shm_size: 1gb`. Lazy-Import: fehlt Playwright, werden

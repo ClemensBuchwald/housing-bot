@@ -35,6 +35,7 @@ from src.models import Listing
 from src.notifications import NotificationService
 from src.scrapers.base import BaseScraper
 from src.scrapers.degewo import DegewoScraper
+from src.scrapers.gcp import GCPScraper
 from src.scrapers.gesobau import GESOBAUScraper
 from src.scrapers.gewobag import GewobagScraper
 from src.scrapers.heimstaden import HeimstadenScraper
@@ -63,6 +64,7 @@ def build_scrapers(use_mock: bool) -> List[BaseScraper]:
         ImmoweltScraper(),        # Tier 2: Immowelt (großes Portal, CW-Ortsteilsuche)
         KleinanzeigenScraper(),   # Tier 2: Kleinanzeigen (private + Makler)
         HeimstadenScraper(),      # Tier 3: Heimstaden (JS, Playwright-Basis)
+        GCPScraper(),             # Tier 3: Grand City Property (JS, Playwright + Ortssuche)
     ]
 
 
