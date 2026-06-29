@@ -40,6 +40,7 @@ from src.scrapers.gewobag import GewobagScraper
 from src.scrapers.heimstaden import HeimstadenScraper
 from src.scrapers.immowelt import ImmoweltScraper
 from src.scrapers.inberlinwohnen import InBerlinWohnenScraper
+from src.scrapers.is24 import IS24Scraper
 from src.scrapers.kleinanzeigen import KleinanzeigenScraper
 from src.scrapers.mock import MockScraper
 from src.scrapers.vonovia import VonoviaScraper
@@ -58,6 +59,7 @@ def build_scrapers(use_mock: bool) -> List[BaseScraper]:
         VonoviaScraper(),         # Tier 1: Vonovia/Deutsche Wohnen (JSON-API)
         GewobagScraper(),         # Tier 1: Gewobag direkt (CW-Bezirksfilter)
         DegewoScraper(),          # Tier 1: degewo (TYPO3-HTML, kein Playwright nötig)
+        IS24Scraper(),            # Tier 1: ImmobilienScout24 (Mobile-API, CW-Geocodes)
         ImmoweltScraper(),        # Tier 2: Immowelt (großes Portal, CW-Ortsteilsuche)
         KleinanzeigenScraper(),   # Tier 2: Kleinanzeigen (private + Makler)
         HeimstadenScraper(),      # Tier 3: Heimstaden (JS, Playwright-Basis)
@@ -94,6 +96,7 @@ def run_one_off_search(criteria: dict, mandate: Optional[dict] = None,
         WBMScraper(),
         GESOBAUScraper(),
         GewobagScraper(),
+        IS24Scraper(),
         ImmoweltScraper(),
         KleinanzeigenScraper(),
         InBerlinWohnenScraper(page_limit=4),

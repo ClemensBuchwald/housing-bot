@@ -8,6 +8,7 @@ Stand: 2026-06-05 · Zielgebiet: Charlottenburg, Wilmersdorf, Halensee, Grunewal
 |--------|-----|--------|-----------|----------|
 | **inberlinwohnen.de** | Aggregator (6 Landeseigene) | Server-HTML | `div.results__row` | Adresse+PLZ |
 | **degewo** | Landeseigen | Server-HTML (TYPO3/tx_openimmo) | `div.c-teaser--apartment` | Titel/Straße |
+| **ImmoScout24** | Größtes Portal | **Mobile-API (JSON)** | `/search` + CW-Geocodes | address.line |
 | **Heimstaden** | Privat | **JS — Playwright** | diagnose-first | Text/PLZ |
 | **WBM** | Landeseigen | Server-HTML | `article.immo-element` | Titel/Adresse |
 | **GESOBAU** | Landeseigen | Server-HTML | `article`/Expose | Text |
@@ -35,7 +36,10 @@ nutzbare Angebotsseite. Nicht als Scraper gebaut (keine Schein-Quellen).
 
 | Quelle | Grund | Möglicher Weg |
 |--------|-------|---------------|
-| **ImmoScout24** | HTML 401-geblockt; Mobile-API rotiert Endpunkte | offizieller Partner-API-Key |
+**Korrektur:** ImmoScout24 wurde zunächst als unzugänglich eingestuft (HTML 401).
+Tatsächlich liefert die **Mobile-App-API** (`api.mobile.immobilienscout24.de/search`
+mit User-Agent `ImmoScout24_2410_28_._` und CW-Ortsteil-Geocodes) vollständige
+Listings als JSON inkl. Expose-Direktlink — als HTML-/API-Scraper gebaut.
 
 **Korrektur:** degewo wurde zunächst fälschlich als JS-SPA eingestuft (falscher
 URL-Pfad getestet). Tatsächlich ist `immosuche.degewo.de/immosuche` server-seitig
