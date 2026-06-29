@@ -33,6 +33,7 @@ from src.config import load_criteria
 from src.evaluator import evaluate_listing
 from src.models import Listing
 from src.notifications import NotificationService
+from src.agent import build_sources_text
 from src.scrapers.base import BaseScraper
 from src.scrapers.degewo import DegewoScraper
 from src.scrapers.gesobau import GESOBAUScraper
@@ -281,7 +282,8 @@ def main() -> None:
     # On-Demand-Suche nur im echten Betrieb (nicht im Mock-Modus)
     # Sofort-Suche mit Store verbinden (Dedup + Persistenz der gezeigten Treffer)
     search_fn = None if args.mock else functools.partial(run_one_off_search, store=store)
-    tg_handler = TelegramHandler(store, search_fn=search_fn)
+    sources_text = build_sources_text([s.name for s in scrapers])
+    tg_handler = TelegramHandler(store, search_fn=search_fn, sources_text=sources_text)
 
     logger.info(
         "Housing Bot gestartet. Scraper: %s. Mock: %s",
