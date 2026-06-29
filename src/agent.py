@@ -43,9 +43,11 @@ auf und erzähl es ihnen in eigenen Worten.
 - Wenn sie pausieren, fortsetzen oder abbrechen wollen, nutze die passenden Tools.
 - Bei normalem Gespräch antworte einfach natürlich, ohne Tools.
 
-Sobald ein Auftrag aktiv ist, durchsuchst du im Hintergrund Berliner Wohnungsportale \
-(landeseigene Gesellschaften, Genossenschaften, Vonovia/Deutsche Wohnen) und meldest \
+Sobald ein Auftrag aktiv ist, durchsuchst du im Hintergrund diese Quellen und meldest \
 passende Treffer mit Vor- und Nachteilen samt Empfehlung.
+
+DEINE AKTIVEN QUELLEN (nur diese nennen, keine anderen erfinden, keine als fehlend behaupten):
+{quellen}
 
 Halt dich kurz — das ist ein Telegram-Chat, kein Brief. Emojis sparsam, wenn sie passen.
 
@@ -197,13 +199,40 @@ def _client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=api_key)
 
 
+# Menschenlesbare Beschreibung je Scraper-Name (für die Quellen-Auskunft des Bots)
+SOURCE_LABELS = {
+    "inberlinwohnen": "Berliner landeseigene Gesellschaften (degewo, GESOBAU, Gewobag, HOWOGE, STADT UND LAND, WBM) über inberlinwohnen.de",
+    "wbm": "WBM (landeseigen, direkt)",
+    "gesobau": "GESOBAU (landeseigen, direkt)",
+    "gewobag": "Gewobag (landeseigen, direkt)",
+    "degewo": "degewo (landeseigen, direkt)",
+    "vonovia": "Vonovia / Deutsche Wohnen (größter privater Vermieter)",
+    "is24": "ImmobilienScout24 (größtes Portal)",
+    "immowelt": "Immowelt",
+    "kleinanzeigen": "eBay Kleinanzeigen (private Anbieter + Makler)",
+}
+
+
+def build_sources_text(scraper_names: List[str]) -> str:
+    seen = set()
+    lines = []
+    for n in scraper_names:
+        label = SOURCE_LABELS.get(n, n)
+        if label not in seen:
+            seen.add(label)
+            lines.append(f"- {label}")
+    return "\n".join(lines)
+
+
 class ConversationAgent:
-    def __init__(self, store: "Store", search_fn=None, notify_fn=None) -> None:
+    def __init__(self, store: "Store", search_fn=None, notify_fn=None, sources_text: str = "") -> None:
         # search_fn(criteria: dict) -> List[dict]: optionale Live-Suchfunktion
         # notify_fn(chat_id: str, text: str): direkter Telegram-Versand (am KI-Text vorbei)
+        # sources_text: menschenlesbare Liste der aktiven Quellen (für korrekte Auskunft)
         self.store = store
         self.search_fn = search_fn
         self.notify_fn = notify_fn
+        self.sources_text = sources_text or "- (Quellen werden geladen)"
         self._histories: Dict[str, List[dict]] = {}
 
     def handle(self, chat_id: str, text: str) -> str:
@@ -246,7 +275,7 @@ class ConversationAgent:
             resp = client.messages.create(
                 model=_MODEL,
                 max_tokens=1024,
-                system=_SYSTEM_PROMPT,
+                system=_SYSTEM_PROMPT.format(quellen=self.sources_text),
                 tools=TOOLS,
                 messages=messages,
             )
