@@ -51,18 +51,28 @@ from src.telegram_handler import TelegramHandler
 
 
 def build_scrapers(use_mock: bool) -> List[BaseScraper]:
+    """Reihenfolge = Meldegeschwindigkeit.
+
+    Der Zyklus läuft sequenziell, also bestimmt die Position, wie alt ein Inserat
+    beim Alert schon ist. Gemessen: inberlinwohnen ~61 s, degewo ~51 s — liefen sie
+    zuerst, wurde IS24 (die ergiebigste Quelle, ~11 s) erst nach ~2,5 min abgefragt.
+    Daher: schnelle, ertragreiche Quellen zuerst, träge Quellen ans Ende.
+    """
     if use_mock:
         return [MockScraper()]
     return [
-        InBerlinWohnenScraper(),  # Tier 1: alle 6 Landeseigenen
-        WBMScraper(),             # Tier 1: WBM direkt
-        GESOBAUScraper(),         # Tier 1: GESOBAU direkt
-        VonoviaScraper(),         # Tier 1: Vonovia/Deutsche Wohnen (JSON-API)
-        GewobagScraper(),         # Tier 1: Gewobag direkt (CW-Bezirksfilter)
-        DegewoScraper(),          # Tier 1: degewo (TYPO3-HTML, kein Playwright nötig)
-        IS24Scraper(),            # Tier 1: ImmobilienScout24 (Mobile-API, CW-Geocodes)
-        ImmoweltScraper(),        # Tier 2: Immowelt (großes Portal, CW-Ortsteilsuche)
-        KleinanzeigenScraper(),   # Tier 2: Kleinanzeigen (private + Makler)
+        # --- Schnell + hohe Ausbeute: zuerst, damit Alerts früh rausgehen ---
+        IS24Scraper(),            # ~11 s, größte Quelle (Mobile-API, CW-Geocodes)
+        ImmoweltScraper(),        # ~15 s, großes Portal (CW-Ortsteilsuche)
+        VonoviaScraper(),         # ~11 s, Vonovia/Deutsche Wohnen (JSON-API)
+        # --- Schnell, aber selten Treffer ---
+        WBMScraper(),             # ~8 s
+        GESOBAUScraper(),         # ~6 s
+        GewobagScraper(),         # ~6 s
+        # --- Träge: ans Ende, verzögern so niemanden ---
+        DegewoScraper(),          # ~51 s (TYPO3-HTML)
+        KleinanzeigenScraper(),   # ~40 s (3 Seiten je Ort)
+        InBerlinWohnenScraper(),  # ~61 s (alle 6 Landeseigenen, viele Seiten)
         # Heimstaden + GCP deaktiviert: Heimstaden ist ein IS24-iframe-Widget (Duplikat),
         # GCP über Playwright nicht zuverlässig filterbar + 0 CW-Ausbeute.
         # Playwright-Basis bleibt für künftige echte JS-Quellen (siehe docs/sources.md).
@@ -209,6 +219,9 @@ def _criteria_to_text(c: dict) -> str:
 # und gemeldet — der Rest bleibt ungesehen und kommt im nächsten Zyklus dran.
 MAX_EVAL_PRO_ZYKLUS = int(os.getenv("MAX_EVAL_PRO_ZYKLUS", "40"))
 MAX_ALERTS_PRO_ZYKLUS = int(os.getenv("MAX_ALERTS_PRO_ZYKLUS", "8"))
+# Damit eine grosse Quelle (IS24: 150 Inserate) bei Rückstau nicht das ganze
+# Budget frisst und die übrigen Quellen aushungert.
+MAX_EVAL_PRO_QUELLE = int(os.getenv("MAX_EVAL_PRO_QUELLE", "15"))
 
 
 def run_scraping_cycle(
@@ -233,11 +246,16 @@ def run_scraping_cycle(
             continue
 
         logger.info("%d Inserate von %s", len(listings), scraper.name)
+        eval_quelle = 0
 
         for listing in listings:
             if evaluated >= MAX_EVAL_PRO_ZYKLUS:
                 logger.info("Bewertungslimit (%d) erreicht — Rest folgt im nächsten Zyklus",
                             MAX_EVAL_PRO_ZYKLUS)
+                break
+            if eval_quelle >= MAX_EVAL_PRO_QUELLE:
+                logger.info("[%s] Quellen-Limit (%d) erreicht — Rest folgt im nächsten Zyklus",
+                            scraper.name, MAX_EVAL_PRO_QUELLE)
                 break
 
             # Deduplizierung
@@ -257,6 +275,7 @@ def run_scraping_cycle(
             # KI-Bewertung gegen aktiven Auftrag
             evaluation = evaluate_listing(listing, mandate)
             evaluated += 1
+            eval_quelle += 1
             store.save_evaluation(listing.id, listing.portal, mandate.get("id", 0), evaluation.__dict__)
 
             if not evaluation.passt or evaluation.score < 30:
