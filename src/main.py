@@ -204,6 +204,13 @@ def _criteria_to_text(c: dict) -> str:
     return "Wohnungssuche " + ", ".join(parts) if parts else "Wohnungssuche"
 
 
+# Schutz vor Nachrichtenflut: Wenn eine Quelle neu dazukommt, sind schlagartig
+# hunderte Inserate "neu". Pro Zyklus werden daher nur begrenzt viele bewertet
+# und gemeldet — der Rest bleibt ungesehen und kommt im nächsten Zyklus dran.
+MAX_EVAL_PRO_ZYKLUS = int(os.getenv("MAX_EVAL_PRO_ZYKLUS", "40"))
+MAX_ALERTS_PRO_ZYKLUS = int(os.getenv("MAX_ALERTS_PRO_ZYKLUS", "8"))
+
+
 def run_scraping_cycle(
     scrapers: List[BaseScraper],
     store: Store,
@@ -212,9 +219,12 @@ def run_scraping_cycle(
 ) -> int:
     """Führt einen kompletten Scraping-Zyklus gegen den aktiven Auftrag durch."""
     hits = 0
+    evaluated = 0
     criteria = load_criteria()  # Hot-reload aus criteria.yaml
 
     for scraper in scrapers:
+        if evaluated >= MAX_EVAL_PRO_ZYKLUS:
+            break
         logger.info("Scraper %s …", scraper.name)
         try:
             listings: List[Listing] = scraper.fetch_listings(criteria)
@@ -225,6 +235,11 @@ def run_scraping_cycle(
         logger.info("%d Inserate von %s", len(listings), scraper.name)
 
         for listing in listings:
+            if evaluated >= MAX_EVAL_PRO_ZYKLUS:
+                logger.info("Bewertungslimit (%d) erreicht — Rest folgt im nächsten Zyklus",
+                            MAX_EVAL_PRO_ZYKLUS)
+                break
+
             # Deduplizierung
             if store.is_known(listing.id, listing.portal):
                 continue
@@ -241,6 +256,7 @@ def run_scraping_cycle(
 
             # KI-Bewertung gegen aktiven Auftrag
             evaluation = evaluate_listing(listing, mandate)
+            evaluated += 1
             store.save_evaluation(listing.id, listing.portal, mandate.get("id", 0), evaluation.__dict__)
 
             if not evaluation.passt or evaluation.score < 30:
@@ -254,11 +270,25 @@ def run_scraping_cycle(
                 "MATCH! [%s] '%s' — Score %d — %s",
                 listing.id, listing.titel, evaluation.score, evaluation.empfehlung,
             )
+            hits += 1
+
+            # Nur begrenzt viele Alerts pro Zyklus — sonst flutet ein neu
+            # angebundenes Portal den Chat. Bereits als gesehen gespeichert,
+            # daher keine Wiederholung; Fund steht im Audit-Log.
+            if hits > MAX_ALERTS_PRO_ZYKLUS:
+                continue
 
             sent = notifier.send_evaluation(listing, evaluation)
             if sent:
                 store.mark_notified(listing.id, listing.portal)
-            hits += 1
+
+    if hits > MAX_ALERTS_PRO_ZYKLUS:
+        rest = hits - MAX_ALERTS_PRO_ZYKLUS
+        logger.info("%d weitere Treffer nicht einzeln gemeldet (Limit %d)", rest, MAX_ALERTS_PRO_ZYKLUS)
+        notifier.send_text(
+            f"… und {rest} weitere passende Angebote in diesem Durchlauf.\n"
+            f"Sag „zeig mir alle“, wenn ihr sie sehen wollt."
+        )
 
     return hits
 
