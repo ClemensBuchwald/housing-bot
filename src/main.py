@@ -262,8 +262,17 @@ def run_scraping_cycle(
             if store.is_known(listing.id, listing.portal):
                 continue
 
-            # Detaildaten nachladen (Etage/Balkon/Keller/Aufzug) — erst NACH der
-            # Dedup, damit nur für wirklich neue Inserate ein Extra-Request nötig ist
+            krit = mandate.get("structured") or {}
+
+            # Frühfilter auf den bereits vorhandenen Feldern (Zimmer/Fläche/Kaltmiete):
+            # spart den Detail-Request UND die KI-Bewertung für offensichtliche Ausreißer.
+            if not _passes_basic(listing, krit):
+                store.save_listing(listing)   # trotzdem als gesehen merken
+                logger.debug("Frühfilter [%s]: harte Kriterien verfehlt", listing.id)
+                continue
+
+            # Detaildaten nachladen (Etage/Balkon/Keller/Aufzug/Warmmiete) — erst NACH
+            # Dedup und Frühfilter, damit nur relevante Inserate einen Request kosten
             try:
                 enrich_listing(listing)
             except Exception:
@@ -271,6 +280,12 @@ def run_scraping_cycle(
 
             # Vollständige Daten persistieren
             store.save_listing(listing)
+
+            # Zweiter Durchgang: jetzt ist auch die Warmmiete bekannt (kam erst
+            # aus dem Detail-Abruf) — ohne KI-Kosten erneut hart prüfen.
+            if not _passes_basic(listing, krit):
+                logger.debug("Vorfilter [%s]: Warmmiete/Kriterien verfehlt", listing.id)
+                continue
 
             # KI-Bewertung gegen aktiven Auftrag
             evaluation = evaluate_listing(listing, mandate)

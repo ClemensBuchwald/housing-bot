@@ -117,6 +117,29 @@ def _client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=api_key)
 
 
+def _merkmale_kurz(merkmale, max_beschreibung: int = 320) -> str:
+    """Merkmale kompakt für den Prompt — Kostenbremse.
+
+    Die Objektbeschreibung ist mit Abstand das längste Feld und trieb die
+    Eingabe-Token je Bewertung stark hoch. Sie wird gekürzt; die kurzen
+    Fakten-Merkmale (Etage, Balkon, PLZ …) bleiben vollständig, weil genau
+    sie für die Kriterienprüfung gebraucht werden.
+    """
+    if not merkmale:
+        return "keine"
+    fakten, beschreibung = [], ""
+    for m in merkmale:
+        s = str(m)
+        if s.startswith("Beschreibung:"):
+            beschreibung = s[len("Beschreibung:"):][:max_beschreibung]
+        else:
+            fakten.append(s)
+    teile = ", ".join(fakten)
+    if beschreibung:
+        teile += f" | Beschreibung: {beschreibung}"
+    return teile or "keine"
+
+
 def parse_mandate(raw_text: str) -> dict:
     """Konvertiert Freitext-Suchauftrag in strukturiertes JSON via Claude."""
     try:
@@ -157,7 +180,7 @@ def evaluate_listing(listing: Listing, mandate: dict) -> Evaluation:
             warmmiete=fmt(listing.warmmiete) + " €" if listing.warmmiete else "unbekannt",
             flaeche=fmt(listing.flaeche) + " m²" if listing.flaeche else "unbekannt",
             zimmer=fmt(listing.zimmer) if listing.zimmer else "unbekannt",
-            merkmale=", ".join(listing.merkmale) if listing.merkmale else "keine",
+            merkmale=_merkmale_kurz(listing.merkmale),
             url=listing.url,
         )
 

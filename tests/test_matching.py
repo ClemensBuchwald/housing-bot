@@ -115,3 +115,26 @@ def test_geo_plz_keine_zufallstreffer_aus_url():
                 url="https://www.kleinanzeigen.de/s-anzeige/x/10719123-203-3365",
                 titel="Wohnung in Neukoelln", stadt="Berlin", merkmale=["PLZ:12043"])
     assert in_zielgebiet(l) is False
+
+
+def test_vorfilter_spart_ki_bei_harten_kriterien():
+    """Offensichtliche Ausreisser duerfen die KI gar nicht erst erreichen."""
+    from src.main import _passes_basic
+    krit = {"warmmiete_max": 3000, "zimmer_min": 3, "flaeche_min": 85}
+    zu_klein = Listing(id="a", portal="is24", url="u", titel="1 Zi", stadt="Berlin",
+                       zimmer=1.0, flaeche=40.0)
+    zu_teuer = Listing(id="c", portal="is24", url="u", titel="3 Zi", stadt="Berlin",
+                       zimmer=3.0, flaeche=95.0, warmmiete=4200.0)
+    passend = Listing(id="b", portal="is24", url="u", titel="3 Zi", stadt="Berlin",
+                      zimmer=3.0, flaeche=95.0, warmmiete=1800.0)
+    assert _passes_basic(zu_klein, krit) is False
+    assert _passes_basic(zu_teuer, krit) is False
+    assert _passes_basic(passend, krit) is True
+
+
+def test_merkmale_kurz_kuerzt_beschreibung_behaelt_fakten():
+    from src.evaluator import _merkmale_kurz
+    m = ["PLZ:10719", "Etage:4 von 6", "Balkon/Terrasse", "Beschreibung:" + "x" * 2000]
+    out = _merkmale_kurz(m)
+    assert "Etage:4 von 6" in out and "Balkon/Terrasse" in out and "PLZ:10719" in out
+    assert len(out) < 600           # Beschreibung wurde gekappt
