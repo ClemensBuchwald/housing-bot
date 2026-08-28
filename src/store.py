@@ -99,6 +99,11 @@ class Store:
                 stmt = stmt.strip()
                 if stmt:
                     self._conn.execute(stmt)
+            # Nachrüstung: volle Bewertung speichern, damit ein später nachgeholter
+            # Alert weiterhin Vor-/Nachteile und Empfehlung zeigen kann.
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(match_log)")}
+            if "evaluation" not in cols:
+                self._conn.execute("ALTER TABLE match_log ADD COLUMN evaluation TEXT")
             self._conn.commit()
 
     # --- Deduplizierung (rückwärtskompatibel) ---
@@ -155,6 +160,70 @@ class Store:
             (listing.id, listing.portal, datetime.now().isoformat()),
         )
         self._conn.commit()
+
+    def claim(self, listing: "Listing") -> bool:
+        """Reserviert ein Inserat atomar. True = wir haben es zuerst gesehen.
+
+        Ersetzt das Muster "is_known() prüfen, später speichern": dazwischen lag
+        ein Zeitfenster, in dem der zweite Thread (Sofort-Suche vs. Dauersuche)
+        dasselbe Inserat als neu ansah — doppelte KI-Bewertung und Doppel-Alert.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT OR IGNORE INTO listings
+                  (id, portal, url, titel, stadt, stadtteil,
+                   kaltmiete, warmmiete, flaeche, zimmer, merkmale, seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    listing.id, listing.portal, listing.url, listing.titel,
+                    listing.stadt, listing.stadtteil, listing.kaltmiete,
+                    listing.warmmiete, listing.flaeche, listing.zimmer,
+                    json.dumps(listing.merkmale, ensure_ascii=False),
+                    datetime.now().isoformat(),
+                ),
+            )
+            neu = cur.rowcount > 0
+            if neu:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO seen_listings (id, portal, seen_at) VALUES (?, ?, ?)",
+                    (listing.id, listing.portal, datetime.now().isoformat()),
+                )
+            self._conn.commit()
+        return neu
+
+    def update_listing_felder(self, listing: "Listing") -> None:
+        """Aktualisiert nach dem Detail-Abruf ergänzte Felder (Warmmiete, Merkmale)."""
+        with self._lock:
+            self._conn.execute(
+                """UPDATE listings SET warmmiete = COALESCE(?, warmmiete),
+                                       kaltmiete = COALESCE(?, kaltmiete),
+                                       merkmale = ?
+                   WHERE id = ? AND portal = ?""",
+                (listing.warmmiete, listing.kaltmiete,
+                 json.dumps(listing.merkmale, ensure_ascii=False),
+                 listing.id, listing.portal),
+            )
+            self._conn.commit()
+
+    def get_pending_matches(self, limit: int = 20) -> List[sqlite3.Row]:
+        """Treffer, die bewertet wurden, aber noch NICHT gemeldet sind.
+
+        Entsteht, wenn ein Alert am Limit abgeschnitten wurde oder der
+        Telegram-Versand fehlschlug. Diese Treffer dürfen nicht verloren gehen.
+        """
+        return self._conn.execute(
+            """
+            SELECT l.*, m.score, m.evaluation
+            FROM listings l
+            JOIN match_log m ON l.id = m.listing_id AND l.portal = m.portal
+            WHERE m.bestanden = 1 AND l.notified_at IS NULL
+            ORDER BY m.score DESC, m.logged_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
 
     def save_match(self, result: "MatchResult", geo_ok: bool = True) -> None:
         """Speichert das Match/Reject-Ergebnis für einen Audit-Trail."""
@@ -271,21 +340,23 @@ class Store:
     # --- Evaluations-Log ---
 
     def save_evaluation(self, listing_id: str, portal: str, mandate_id: int, evaluation: dict) -> None:
-        """Speichert das KI-Bewertungsergebnis."""
-        self._conn.execute(
-            """INSERT OR REPLACE INTO match_log
-               (listing_id, portal, logged_at, bestanden, score, ablehnungsgrund, geo_ok)
-               VALUES (?, ?, ?, ?, ?, ?, 1)""",
-            (
-                listing_id,
-                portal,
-                datetime.now().isoformat(),
-                1 if evaluation.get("passt") else 0,
-                evaluation.get("score", 0),
-                evaluation.get("kurzfazit", ""),
-            ),
-        )
-        self._conn.commit()
+        """Speichert das KI-Bewertungsergebnis inkl. vollständigem JSON."""
+        with self._lock:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO match_log
+                   (listing_id, portal, logged_at, bestanden, score, ablehnungsgrund, geo_ok, evaluation)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?)""",
+                (
+                    listing_id,
+                    portal,
+                    datetime.now().isoformat(),
+                    1 if evaluation.get("passt") else 0,
+                    evaluation.get("score", 0),
+                    evaluation.get("kurzfazit", ""),
+                    json.dumps(evaluation, ensure_ascii=False, default=str),
+                ),
+            )
+            self._conn.commit()
 
     # --- Chat-Verlauf (überlebt Neustarts) ---
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import logging
 import os
 import re
@@ -95,6 +96,30 @@ _IMMER_AUSGESCHLOSSEN = [
 _MOEBLIERT_RE = re.compile(r"(?<!un)(?<!nicht )m[öo]bliert", re.IGNORECASE)
 
 
+class _StundenBudget:
+    """Gleitendes Stundenlimit — unabhängig davon, wie oft ein Zyklus läuft."""
+
+    def __init__(self, limit: int, name: str) -> None:
+        self.limit = limit
+        self.name = name
+        self._zeiten: List[float] = []
+
+    def _aufraeumen(self) -> None:
+        grenze = time.time() - 3600
+        self._zeiten = [t for t in self._zeiten if t > grenze]
+
+    def frei(self) -> bool:
+        self._aufraeumen()
+        return len(self._zeiten) < self.limit
+
+    def verbrauchen(self) -> None:
+        self._zeiten.append(time.time())
+
+    def verbraucht(self) -> int:
+        self._aufraeumen()
+        return len(self._zeiten)
+
+
 def _hat_ausschlusswort(listing: Listing, crit: dict) -> Optional[str]:
     """Prüft Titel + Merkmale gegen Ausschlusswörter. Gibt das Treffer-Wort zurück."""
     text = (listing.titel or "").lower() + " " + " ".join(str(m) for m in (listing.merkmale or [])).lower()
@@ -167,6 +192,11 @@ def run_one_off_search(criteria: dict, mandate: Optional[dict] = None,
             candidates.append(l)
 
     candidates = candidates[:12]  # KI-Budget begrenzen
+
+    # Kandidaten sofort reservieren — sonst bewertet die parallel laufende
+    # Dauersuche dieselben Inserate nochmal und meldet sie doppelt.
+    if store and not include_seen:
+        candidates = [l for l in candidates if store.claim(l)]
 
     # 1b) Detaildaten nachladen (Etage/Balkon/Keller/Aufzug/Beschreibung),
     #     damit die KI Kriterien wie "kein Erdgeschoss" wirklich prüfen kann
@@ -253,9 +283,79 @@ def _criteria_to_text(c: dict) -> str:
 # und gemeldet — der Rest bleibt ungesehen und kommt im nächsten Zyklus dran.
 MAX_EVAL_PRO_ZYKLUS = int(os.getenv("MAX_EVAL_PRO_ZYKLUS", "40"))
 MAX_ALERTS_PRO_ZYKLUS = int(os.getenv("MAX_ALERTS_PRO_ZYKLUS", "8"))
+# Zeitbasierte Obergrenzen. Wichtig seit der Schnellspur: Zyklen laufen jetzt
+# 5x häufiger, ein reines Pro-Zyklus-Limit würde also 5x so viel durchlassen.
+MAX_EVAL_PRO_STUNDE = int(os.getenv("MAX_EVAL_PRO_STUNDE", "60"))
+MAX_ALERTS_PRO_STUNDE = int(os.getenv("MAX_ALERTS_PRO_STUNDE", "12"))
+
+EVAL_BUDGET = _StundenBudget(MAX_EVAL_PRO_STUNDE, "Bewertungen")
+ALERT_BUDGET = _StundenBudget(MAX_ALERTS_PRO_STUNDE, "Alerts")
+# Je Quelle ein eigenes Stundenbudget — eine Quelle darf das Gesamtbudget nicht
+# allein aufbrauchen, sonst kommen die übrigen Quellen bei Rückstau nie dran.
+QUELLEN_BUDGET: dict = {}
+
+
+def _quellen_budget(name: str) -> _StundenBudget:
+    if name not in QUELLEN_BUDGET:
+        QUELLEN_BUDGET[name] = _StundenBudget(MAX_EVAL_PRO_QUELLE_STUNDE, f"Bewertungen/{name}")
+    return QUELLEN_BUDGET[name]
 # Damit eine grosse Quelle (IS24: 150 Inserate) bei Rückstau nicht das ganze
-# Budget frisst und die übrigen Quellen aushungert.
+# Budget frisst und die übrigen Quellen aushungert. Seit der Schnellspur laufen
+# die schnellen Quellen 5x häufiger — deshalb zusätzlich stundenbasiert.
 MAX_EVAL_PRO_QUELLE = int(os.getenv("MAX_EVAL_PRO_QUELLE", "15"))
+MAX_EVAL_PRO_QUELLE_STUNDE = int(os.getenv("MAX_EVAL_PRO_QUELLE_STUNDE", "25"))
+
+
+SAMMELMELDUNG_BUDGET = _StundenBudget(2, "Sammelmeldungen")
+
+
+def _sammelmeldung(notifier: NotificationService, anzahl: int) -> None:
+    """Hinweis auf zurückgestellte Treffer — höchstens 2x pro Stunde.
+
+    Ohne Drosselung würde bei vollem Alert-Budget jeder 2-Minuten-Zyklus eine
+    eigene "…und 1 weitere"-Nachricht schicken und den Chat genau durch die
+    Anti-Flut-Logik fluten.
+    """
+    if not SAMMELMELDUNG_BUDGET.frei():
+        return
+    SAMMELMELDUNG_BUDGET.verbrauchen()
+    notifier.send_text(
+        f"… {anzahl} weitere passende Angebote sind zurückgestellt.\n"
+        f"Ich melde sie nach, sobald wieder Luft ist — oder sag „zeig mir alle“."
+    )
+
+
+def _nachholen(store: Store, notifier: NotificationService) -> int:
+    """Sendet zurückgestellte Treffer nach — ohne neue KI-Bewertung.
+
+    Die vollständige Bewertung liegt in match_log.evaluation, es entstehen also
+    keine Token-Kosten. Läuft zu Beginn jedes Zyklus, solange Budget frei ist.
+    """
+    from src.evaluator import Evaluation
+    nachgeholt = 0
+    for row in store.get_pending_matches(limit=MAX_ALERTS_PRO_ZYKLUS):
+        if not ALERT_BUDGET.frei():
+            break
+        try:
+            ev_dict = json.loads(row["evaluation"]) if row["evaluation"] else {}
+            evaluation = Evaluation.from_dict(ev_dict)
+            listing = Listing(
+                id=row["id"], portal=row["portal"], url=row["url"], titel=row["titel"],
+                stadt=row["stadt"], stadtteil=row["stadtteil"],
+                kaltmiete=row["kaltmiete"], warmmiete=row["warmmiete"],
+                flaeche=row["flaeche"], zimmer=row["zimmer"],
+                merkmale=json.loads(row["merkmale"]) if row["merkmale"] else [],
+            )
+        except Exception:
+            logger.debug("Nachholen: Datensatz unlesbar (%s)", row["id"], exc_info=True)
+            continue
+        if notifier.send_evaluation(listing, evaluation):
+            ALERT_BUDGET.verbrauchen()
+            store.mark_notified(listing.id, listing.portal)
+            nachgeholt += 1
+    if nachgeholt:
+        logger.info("%d zurückgestellte Treffer nachgeholt", nachgeholt)
+    return nachgeholt
 
 
 def run_scraping_cycle(
@@ -266,6 +366,10 @@ def run_scraping_cycle(
 ) -> int:
     """Führt einen kompletten Scraping-Zyklus gegen den aktiven Auftrag durch."""
     hits = 0
+    unterdrueckt = 0
+    # Zuerst offene Treffer aus früheren Zyklen zustellen — sie sind älter und
+    # kosten nichts, weil die Bewertung bereits vorliegt.
+    _nachholen(store, notifier)
     evaluated = 0
     criteria = load_criteria()  # Hot-reload aus criteria.yaml
 
@@ -287,13 +391,18 @@ def run_scraping_cycle(
                 logger.info("Bewertungslimit (%d) erreicht — Rest folgt im nächsten Zyklus",
                             MAX_EVAL_PRO_ZYKLUS)
                 break
-            if eval_quelle >= MAX_EVAL_PRO_QUELLE:
-                logger.info("[%s] Quellen-Limit (%d) erreicht — Rest folgt im nächsten Zyklus",
-                            scraper.name, MAX_EVAL_PRO_QUELLE)
+            if not EVAL_BUDGET.frei():
+                logger.info("Stundenbudget Bewertungen (%d) ausgeschöpft — Rest folgt später",
+                            MAX_EVAL_PRO_STUNDE)
+                break
+            if eval_quelle >= MAX_EVAL_PRO_QUELLE or not _quellen_budget(scraper.name).frei():
+                logger.info("[%s] Quellen-Limit erreicht (Zyklus %d / Stunde %d) — Rest folgt später",
+                            scraper.name, MAX_EVAL_PRO_QUELLE, MAX_EVAL_PRO_QUELLE_STUNDE)
                 break
 
-            # Deduplizierung
-            if store.is_known(listing.id, listing.portal):
+            # Atomar reservieren statt "prüfen, später speichern" — sonst sieht
+            # die parallel laufende Sofort-Suche dasselbe Inserat auch als neu.
+            if not store.claim(listing):
                 continue
 
             krit = mandate.get("structured") or {}
@@ -301,7 +410,6 @@ def run_scraping_cycle(
             # Frühfilter auf den bereits vorhandenen Feldern (Zimmer/Fläche/Kaltmiete):
             # spart den Detail-Request UND die KI-Bewertung für offensichtliche Ausreißer.
             if not _passes_basic(listing, krit):
-                store.save_listing(listing)   # trotzdem als gesehen merken
                 logger.debug("Frühfilter [%s]: harte Kriterien verfehlt", listing.id)
                 continue
 
@@ -309,11 +417,9 @@ def run_scraping_cycle(
             # Dedup und Frühfilter, damit nur relevante Inserate einen Request kosten
             try:
                 enrich_listing(listing)
+                store.update_listing_felder(listing)
             except Exception:
                 logger.debug("Enrichment fehlgeschlagen für %s", listing.id, exc_info=True)
-
-            # Vollständige Daten persistieren
-            store.save_listing(listing)
 
             # Zweiter Durchgang: jetzt ist auch die Warmmiete bekannt (kam erst
             # aus dem Detail-Abruf) — ohne KI-Kosten erneut hart prüfen.
@@ -325,6 +431,8 @@ def run_scraping_cycle(
             evaluation = evaluate_listing(listing, mandate)
             evaluated += 1
             eval_quelle += 1
+            EVAL_BUDGET.verbrauchen()
+            _quellen_budget(scraper.name).verbrauchen()
             store.save_evaluation(listing.id, listing.portal, mandate.get("id", 0), evaluation.__dict__)
 
             if not evaluation.passt or evaluation.score < 30:
@@ -340,45 +448,79 @@ def run_scraping_cycle(
             )
             hits += 1
 
-            # Nur begrenzt viele Alerts pro Zyklus — sonst flutet ein neu
-            # angebundenes Portal den Chat. Bereits als gesehen gespeichert,
-            # daher keine Wiederholung; Fund steht im Audit-Log.
-            if hits > MAX_ALERTS_PRO_ZYKLUS:
+            # Alert-Bremse: pro Zyklus UND gleitend pro Stunde. Unterdrückte
+            # Treffer bleiben mit notified_at = NULL liegen und werden zu Beginn
+            # eines späteren Zyklus nachgeholt (_nachholen) — sie gehen NICHT
+            # verloren und kosten dabei auch keine neue KI-Bewertung.
+            if hits > MAX_ALERTS_PRO_ZYKLUS or not ALERT_BUDGET.frei():
+                unterdrueckt += 1
                 continue
 
             sent = notifier.send_evaluation(listing, evaluation)
             if sent:
+                ALERT_BUDGET.verbrauchen()
                 store.mark_notified(listing.id, listing.portal)
+            else:
+                # Versand fehlgeschlagen: ebenfalls offen lassen statt still verlieren
+                unterdrueckt += 1
 
-    if hits > MAX_ALERTS_PRO_ZYKLUS:
-        rest = hits - MAX_ALERTS_PRO_ZYKLUS
-        logger.info("%d weitere Treffer nicht einzeln gemeldet (Limit %d)", rest, MAX_ALERTS_PRO_ZYKLUS)
-        notifier.send_text(
-            f"… und {rest} weitere passende Angebote in diesem Durchlauf.\n"
-            f"Sag „zeig mir alle“, wenn ihr sie sehen wollt."
-        )
+    if unterdrueckt:
+        logger.info("%d Treffer offen (Zyklus %d / Stunde %d) — werden nachgeholt",
+                    unterdrueckt, MAX_ALERTS_PRO_ZYKLUS, MAX_ALERTS_PRO_STUNDE)
+        _sammelmeldung(notifier, unterdrueckt)
 
     return hits
 
 
+# Schnellspur: Quellen, die in Sekunden antworten und die meisten Treffer liefern.
+# Sie werden häufig gepollt; die trägen Quellen laufen weiter im langsamen Takt.
+# Gemessen: ~2 neue CW-Inserate/Stunde zu Geschäftszeiten — bei 10-Minuten-Takt
+# ist ein Treffer im Mittel 5 Minuten alt, bei 2 Minuten nur noch eine.
+SCHNELLSPUR = {"is24", "immowelt", "vonovia"}
+
+
 def scraping_thread(scrapers: List[BaseScraper], store: Store, notifier: NotificationService,
-                    stop_event: threading.Event, poll_interval: int) -> None:
-    """Hintergrund-Thread: scraped wenn aktiver Auftrag vorhanden."""
-    logger.info("Scraping-Thread gestartet (Intervall: %ds)", poll_interval)
+                    stop_event: threading.Event, poll_interval: int,
+                    fast_interval: Optional[int] = None) -> None:
+    """Ein Thread, zwei Takte.
+
+    Bewusst einthreadig: eine zweite Nebenläufigkeit auf Store und Telegram würde
+    Dedup und Alert-Limits unterlaufen. Stattdessen läuft die Schleife im schnellen
+    Takt und nimmt die trägen Quellen nur jeden n-ten Durchlauf dazu.
+    """
+    fast_interval = fast_interval or poll_interval
+    schnell = [s for s in scrapers if s.name in SCHNELLSPUR]
+    traege = [s for s in scrapers if s.name not in SCHNELLSPUR]
+    # Wie viele Schnell-Durchläufe pro vollem Durchlauf
+    voll_alle_n = max(1, round(poll_interval / fast_interval)) if fast_interval else 1
+
+    logger.info(
+        "Scraping-Thread gestartet — Schnellspur %s alle %ds, alle Quellen alle %ds",
+        [s.name for s in schnell] or "—", fast_interval, poll_interval,
+    )
+
+    runde = 0
     while not stop_event.is_set():
         mandate = store.get_any_active_mandate()
         if mandate:
-            logger.info("Aktiver Auftrag gefunden — starte Scraping-Zyklus")
-            try:
-                hits = run_scraping_cycle(scrapers, store, notifier, mandate)
-                logger.info("%d neue Treffer in diesem Zyklus", hits)
-            except Exception:
-                logger.exception("Fehler im Scraping-Zyklus")
+            voller_lauf = (runde % voll_alle_n == 0)
+            aktive = scrapers if voller_lauf else schnell
+            if aktive:
+                logger.info("Aktiver Auftrag — %s Zyklus (%d Quellen)",
+                            "voller" if voller_lauf else "Schnell", len(aktive))
+                try:
+                    hits = run_scraping_cycle(aktive, store, notifier, mandate)
+                    logger.info("%d neue Treffer in diesem Zyklus", hits)
+                except Exception:
+                    logger.exception("Fehler im Scraping-Zyklus")
         else:
-            logger.info("Kein aktiver Auftrag — Bot wartet")
+            # Nur beim vollen Takt loggen, sonst flutet es die Logs
+            if runde % voll_alle_n == 0:
+                logger.info("Kein aktiver Auftrag — Bot wartet")
+        runde += 1
 
         # Warte in kleinen Schritten, damit stop_event schnell reagiert
-        for _ in range(poll_interval):
+        for _ in range(fast_interval):
             if stop_event.is_set():
                 break
             time.sleep(1)
@@ -405,6 +547,9 @@ def main() -> None:
     args = parser.parse_args()
 
     poll_interval = int(os.getenv("POLL_INTERVAL", "10")) * 60
+    # Schnellspur-Takt in Sekunden (0/leer = aus, dann läuft alles im alten Takt)
+    fast_interval = int(os.getenv("FAST_POLL_SECONDS", "120")) or poll_interval
+    fast_interval = min(fast_interval, poll_interval)
     scrapers = build_scrapers(use_mock=args.mock)
     store = Store()
     notifier = NotificationService()
@@ -436,7 +581,7 @@ def main() -> None:
 
     t_scraping = threading.Thread(
         target=scraping_thread,
-        args=(scrapers, store, notifier, stop_event, poll_interval),
+        args=(scrapers, store, notifier, stop_event, poll_interval, fast_interval),
         daemon=True,
         name="scraping",
     )
