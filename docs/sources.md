@@ -1,5 +1,13 @@
 # Quellen-Übersicht
 
+> **Wartungshinweis (2026-08):** Ein Live-Check aller Quellen deckte mehrere
+> stille Ausfälle auf — kaputte Pagination (inberlinwohnen, vonovia), falsche
+> Orts-IDs (kleinanzeigen suchte ganz Berlin statt CW) und ein Geo-Filter, der
+> Bezirksnamen als Ortsteil las. Alle behoben. Lehre: Portale ändern Parameter
+> und Formate still; ein Scraper mit HTTP 200 und 0 Treffern ist nicht
+> automatisch „korrekt leer". Bei Auffälligkeiten zuerst prüfen, ob die
+> Rohtrefferzahl plausibel ist.
+
 Stand: 2026-06-05 · Zielgebiet: Charlottenburg, Wilmersdorf, Halensee, Grunewald
 
 ## Aktive Live-Quellen (im Polling + On-Demand)
@@ -81,3 +89,26 @@ JS-Quellen sauber übersprungen, HTML-Quellen laufen normal weiter.
 - **Wohnen auf Zeit / Zwischenmiete**: bewusst getrennt von Dauerwohnungen.
   Würde als eigener Suchmodus mit eigenem Auftragstyp umgesetzt, nicht in den
   regulären Mietstrom gemischt. Erst nach den regulären Quellen.
+
+## Detaildaten & Kontaktrecherche (`src/scrapers/is24_detail.py`)
+
+`GET https://api.mobile.immobilienscout24.de/expose/{id}` (UA `ImmoScout24_2410_28_._`)
+liefert je Inserat:
+
+| Feld | Herkunft | Nutzen |
+|------|----------|--------|
+| Etage, Balkon/Terrasse, Keller, Aufzug, Haustiere | `sections[].ATTRIBUTE_LIST` (`CHECK` = vorhanden) | KI kann „kein Erdgeschoss", „Balkon" endlich wirklich prüfen |
+| Objektbeschreibung / Lage | `sections[].TEXT_AREA` | Textverständnis für die Bewertung |
+| **Warmmiete** | Attribut „Gesamtmiete" | Die Trefferliste liefert nur Kaltmiete — ohne das ist eine Warmmieten-Obergrenze nicht prüfbar |
+| Ansprechpartner, Firma, Kontaktweg | `contact.contactData.agent` | Agent-Tool `kontaktdaten_recherchieren` |
+
+Angereichert wird **nach** der Dedup (nur für wirklich neue Inserate) und vor der
+KI-Bewertung. Kontaktdaten: ausschließlich die im Inserat öffentlich sichtbaren
+gewerblichen Anbieterdaten — keine Logins, keine privaten Daten Dritter.
+
+## Flutschutz
+
+`MAX_EVAL_PRO_ZYKLUS` (40) und `MAX_ALERTS_PRO_ZYKLUS` (8), per `.env` änderbar.
+Verhindert, dass eine neu angebundene Quelle mit leerer Dedup den Chat mit
+hunderten Nachrichten flutet. Nicht gemeldete Treffer bleiben gespeichert und
+sind über „zeig mir alle" abrufbar.

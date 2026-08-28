@@ -102,8 +102,22 @@ def parse_contact(data: dict) -> Dict[str, Optional[str]]:
     }
 
 
+def _euro(text: str) -> Optional[float]:
+    m = re.search(r"([\d.]+(?:,\d{2})?)\s*€", text or "")
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(".", "").replace(",", "."))
+    except ValueError:
+        return None
+
+
 def enrich_listing(listing) -> bool:
-    """Reichert ein IS24-Listing um Detail-Merkmale + Beschreibung an.
+    """Reichert ein IS24-Listing um Detail-Merkmale, Beschreibung und Warmmiete an.
+
+    Die Trefferliste der API liefert nur die Kaltmiete — die Gesamt-/Warmmiete
+    steht erst im Expose. Ohne sie kann eine Warmmieten-Obergrenze im Auftrag
+    nicht geprüft werden.
 
     Gibt True zurück, wenn angereichert wurde. Nur für portal == 'is24'.
     """
@@ -119,6 +133,15 @@ def enrich_listing(listing) -> bool:
     feats = parse_features(data)
     if feats:
         listing.merkmale = list(listing.merkmale) + feats
+
+        # Warmmiete/Kaltmiete aus den Detail-Attributen übernehmen
+        for f in feats:
+            low = f.lower()
+            if listing.warmmiete is None and low.startswith(("gesamtmiete:", "warmmiete:")):
+                listing.warmmiete = _euro(f)
+            elif listing.kaltmiete is None and low.startswith(("kaltmiete", "nettokaltmiete")):
+                listing.kaltmiete = _euro(f)
+
     desc = parse_description(data)
     if desc:
         listing.merkmale.append(f"Beschreibung:{desc}")
