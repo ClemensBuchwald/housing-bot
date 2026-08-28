@@ -44,16 +44,50 @@ _ZU_GROB = [
     "west",
 ]
 
+# Ortsteile im selben Bezirk (Charlottenburg-Wilmersdorf), die NICHT gesucht sind.
+# Ihre PLZ überlappen teils mit den Zielorten — der benannte Ortsteil hat Vorrang.
+_NICHT_ZIELORTE = {
+    "westend", "schmargendorf", "charlottenburg-nord", "grunewald-forst",
+}
+
 
 def in_zielgebiet(listing: "Listing") -> bool:
-    """True wenn das Listing eindeutig einem Zielort zugeordnet werden kann."""
-    text = _listing_text(listing)
-    return _hat_zielort(text) or _hat_ziel_plz(text)
+    """True wenn das Listing eindeutig einem Zielort zugeordnet werden kann.
+
+    Ortsnamen dürfen auch aus der URL kommen (z.B. '/berlin-charlottenburg/').
+    Die PLZ-Prüfung ignoriert die URL bewusst — dort stehen Anzeigen-IDs, deren
+    Ziffernfolgen sonst zufällig eine Ziel-PLZ treffen können.
+
+    Ein ausdrücklich erkannter Nicht-Zielortsteil (z.B. Westend, Schmargendorf)
+    schlägt die PLZ-Heuristik: Die PLZ-Bereiche überlappen an den Bezirksrändern,
+    ein konkret benannter Ortsteil ist die verlässlichere Angabe.
+    """
+    if listing.stadtteil:
+        st = listing.stadtteil.strip().lower()
+        if st in _ZIELORTE:
+            return True
+        if st in _NICHT_ZIELORTE:
+            return False
+    return _hat_zielort(_listing_text(listing)) or _hat_ziel_plz(_listing_text(listing, mit_url=False))
+
+
+# Doppel-Bezirksnamen: enthalten Ortsteilnamen, sind aber KEIN Ortsteil.
+# Ohne Maskierung wird z.B. jedes Inserat im Bezirk "Charlottenburg-Wilmersdorf"
+# fälschlich als Ortsteil "Wilmersdorf" gelesen.
+_BEZIRKSNAMEN = [
+    "charlottenburg-wilmersdorf", "charlottenburg-nord",
+    "steglitz-zehlendorf", "tempelhof-schöneberg", "tempelhof-schoeneberg",
+    "marzahn-hellersdorf", "friedrichshain-kreuzberg", "treptow-köpenick",
+    "treptow-koepenick", "mitte-tiergarten",
+]
 
 
 def extract_stadtteil(text: str) -> Optional[str]:
     """Extrahiert den spezifischsten erkennbaren Stadtteil aus einem Text."""
     text_lower = text.lower()
+    # Bezirksnamen ausblenden, damit sie nicht als Ortsteil durchgehen
+    for bez in _BEZIRKSNAMEN:
+        text_lower = text_lower.replace(bez, " ")
 
     # Priorität: Halensee und Grunewald zuerst (werden sonst von Charlottenburg verschluckt)
     for ort in ["halensee", "grunewald", "wilmersdorf", "charlottenburg"]:
@@ -62,6 +96,9 @@ def extract_stadtteil(text: str) -> Optional[str]:
 
     # Weitere Berliner Stadtteile als Fallback
     weitere = [
+        # Nachbar-Ortsteile im selben Bezirk zuerst — sonst greift unten
+        # fälschlich ein Zielort über die PLZ
+        "westend", "schmargendorf",
         "mitte", "prenzlauer berg", "friedrichshain", "kreuzberg",
         "schöneberg", "tempelhof", "neukölln", "treptow", "pankow",
         "weißensee", "lichtenberg", "marzahn", "hellersdorf",
@@ -74,13 +111,14 @@ def extract_stadtteil(text: str) -> Optional[str]:
     return None
 
 
-def _listing_text(listing: "Listing") -> str:
+def _listing_text(listing: "Listing", mit_url: bool = True) -> str:
     parts = [
         listing.titel or "",
         listing.stadtteil or "",
         listing.stadt or "",
-        listing.url or "",
     ]
+    if mit_url:
+        parts.append(listing.url or "")
     # Merkmale enthalten bei mehreren Quellen die Adresse und "PLZ:xxxxx" —
     # ohne sie liefen PLZ-basierte Zuordnungen ins Leere.
     parts += [str(m) for m in (listing.merkmale or [])]
@@ -102,8 +140,9 @@ def _hat_zielort(text: str) -> bool:
 
 
 def _hat_ziel_plz(text: str) -> bool:
-    """Prüft auf bekannte PLZ der Zielorte."""
-    for plz in _ZIEL_PLZ:
-        if plz in text:
-            return True
-    return False
+    """Prüft auf bekannte PLZ der Zielorte.
+
+    Mit Wortgrenzen — ein nacktes Substring-Match traf sonst zufällige
+    Ziffernfolgen in URLs/Anzeigen-IDs (z.B. '/s-anzeige/...10719...').
+    """
+    return bool(re.search(r"\b(" + "|".join(sorted(_ZIEL_PLZ)) + r")\b", text))

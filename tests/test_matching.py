@@ -91,3 +91,27 @@ def test_geo_filter_lehnt_fremde_plz_ab():
                 titel="2-Zimmer-Wohnung", stadt="Berlin",
                 merkmale=["PLZ:13055", "Adresse:Testweg 9, 13055 Berlin"])
     assert in_zielgebiet(l) is False
+
+
+def test_geo_lehnt_nachbar_ortsteil_ab():
+    """Westend liegt im selben Bezirk und teilt PLZ — ist aber kein Zielort."""
+    from src.scrapers.geo import in_zielgebiet
+    l = Listing(id="w", portal="immowelt", url="https://immowelt.de/expose/x",
+                titel="3 Zi", stadt="Berlin", stadtteil="Westend",
+                merkmale=["PLZ:14052"])
+    assert in_zielgebiet(l) is False
+
+
+def test_geo_bezirksname_wird_nicht_als_ortsteil_gelesen():
+    from src.scrapers.geo import extract_stadtteil
+    # Bezirk "Charlottenburg-Wilmersdorf" darf nicht "Wilmersdorf" ergeben
+    assert extract_stadtteil("Charlottenburg, Charlottenburg-Wilmersdorf (10587)") == "Charlottenburg"
+
+
+def test_geo_plz_keine_zufallstreffer_aus_url():
+    """Ziffernfolgen in Anzeigen-IDs dürfen keine PLZ-Treffer erzeugen."""
+    from src.scrapers.geo import in_zielgebiet
+    l = Listing(id="k", portal="kleinanzeigen",
+                url="https://www.kleinanzeigen.de/s-anzeige/x/10719123-203-3365",
+                titel="Wohnung in Neukoelln", stadt="Berlin", merkmale=["PLZ:12043"])
+    assert in_zielgebiet(l) is False
