@@ -55,7 +55,8 @@ class VonoviaScraper(BaseScraper):
     def fetch_listings(self, criteria: Criteria) -> List[Listing]:
         all_listings: List[Listing] = []
         offset = 0
-        page_size = 100
+        # Die API ignoriert "pageSize" und deckelt auf 15; wirksam ist "limit".
+        page_size = 50
 
         while True:
             resp = self.get(
@@ -63,7 +64,7 @@ class VonoviaScraper(BaseScraper):
                 params={
                     "marketing_type": "RENT",
                     "city": "Berlin",
-                    "pageSize": page_size,
+                    "limit": page_size,
                     "offset": offset,
                 },
                 headers=_HEADERS,
@@ -97,8 +98,14 @@ class VonoviaScraper(BaseScraper):
                 self.name, offset, len(results), len(wohnungen), total,
             )
 
-            offset += page_size
-            if offset >= total or not results:
+            # Offset um die TATSÄCHLICH gelieferte Menge erhöhen — sonst überspringt
+            # ein serverseitiges Limit (API deckelt) stillschweigend ganze Seiten.
+            if not results:
+                break
+            offset += len(results)
+            if total and offset >= total:
+                break
+            if offset > 2000:  # Sicherheitsgrenze
                 break
 
         logger.info("[%s] %d Inserate im Zielgebiet CW", self.name, len(all_listings))

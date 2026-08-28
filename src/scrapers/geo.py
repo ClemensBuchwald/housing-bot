@@ -81,6 +81,9 @@ def _listing_text(listing: "Listing") -> str:
         listing.stadt or "",
         listing.url or "",
     ]
+    # Merkmale enthalten bei mehreren Quellen die Adresse und "PLZ:xxxxx" —
+    # ohne sie liefen PLZ-basierte Zuordnungen ins Leere.
+    parts += [str(m) for m in (listing.merkmale or [])]
     return " ".join(parts).lower()
 
 

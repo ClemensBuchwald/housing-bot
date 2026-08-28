@@ -9,7 +9,8 @@ Technischer Befund (Live-Analyse 2026-06-05):
       Row 2 (ungerade): ausgeklappter Detail-Bereich mit externem "Alle Details"-Link
   - Externe Links zeigen direkt auf Provider-Seiten (degewo.de, wbm.de, etc.)
   - Bezirksfilter: ?bezirk=charlottenburg-wilmersdorf (serverseitig, aber aktuell 0 CW-Angebote)
-  - Pagination: ?paged=N (wenn mehr als 20 Listings)
+  - Pagination: ?page=N (Laravel/Livewire; das frühere ?paged=N wird ignoriert
+    und liefert stumm immer Seite 1 → erzeugte Duplikate)
 
 Geografischer Filter: geo.py — nur CW-Inserate werden weitergegeben
 """
@@ -47,7 +48,9 @@ class InBerlinWohnenScraper(BaseScraper):
         while page <= max_pages:
             # Kein bezirk-Parameter — Filter ist clientseitig (JS), hat keine Wirkung
             # Kürzere Pause für inberlinwohnen (29 Seiten × Pause = Gesamtlaufzeit)
-            resp = self.get(_SEARCH_URL, params={"paged": page}, min_delay=1.0, max_delay=2.5)
+            # Seite via ?page=N — die Site läuft auf Laravel/Livewire; der frühere
+            # Parameter "paged" wird still ignoriert (jede Seite lieferte Seite 1).
+            resp = self.get(_SEARCH_URL, params={"page": page}, min_delay=1.0, max_delay=2.5)
             if resp is None:
                 break
 

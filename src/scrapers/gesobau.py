@@ -81,8 +81,18 @@ class GESOBAUScraper(BaseScraper):
 
             warmmiete = _extract_price(text, ["Warmmiete", "Gesamtmiete"])
             kaltmiete = _extract_price(text, ["Kaltmiete", "Nettokaltmiete"])
+            # Fallback: GESOBAU zeigt den Betrag in der Info-Zeile ohne Label —
+            # das ist die Gesamt-/Warmmiete.
+            if warmmiete is None and kaltmiete is None:
+                m = re.search(r"([\d.]+,\d{2})\s*€", text)
+                if m:
+                    warmmiete = _to_float(m.group(1))
             flaeche = _extract_qm(text)
             zimmer = _extract_zimmer(text)
+
+            # Adresse/PLZ mitgeben → geo.py wertet sie aus
+            plz_m = re.search(r"\b(1[0-4]\d{3})\b", text)
+            merkmale = [f"PLZ:{plz_m.group(1)}"] if plz_m else []
 
             return Listing(
                 id=f"gesobau-{listing_id}",
@@ -95,6 +105,7 @@ class GESOBAUScraper(BaseScraper):
                 warmmiete=warmmiete,
                 flaeche=flaeche,
                 zimmer=zimmer,
+                merkmale=merkmale,
                 gefunden_am=datetime.now(),
             )
         except Exception as e:

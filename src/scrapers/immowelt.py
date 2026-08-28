@@ -74,10 +74,19 @@ class ImmoweltScraper(BaseScraper):
 
             listing_id = m_id.group(1) if m_id else re.sub(r"\W", "", text[:30])
 
-            # Ort: "Charlottenburg, Berlin (10623)"
-            ort_m = re.search(r"([A-ZÄÖÜ][a-zäöüß]+),\s*Berlin\s*\((\d{5})\)", text)
-            stadtteil = ort_m.group(1) if ort_m else extract_stadtteil(text)
-            plz = ort_m.group(2) if ort_m else ""
+            # Ort: Format wechselte von "Charlottenburg, Berlin (10623)" zu
+            # "{...} {Ortsteil}, {Bezirk} ({PLZ})". Deshalb an der PLZ verankern
+            # und den Ortsteil als letzten Großschreib-Block davor nehmen.
+            plz = ""
+            stadtteil = None
+            ort_m = re.search(r"([^|,]+),\s*([^|,()]+?)\s*\((\d{5})\)", text)
+            if ort_m:
+                plz = ort_m.group(3)
+                worte = re.findall(r"[A-ZÄÖÜ][a-zäöüß]+(?:-[A-ZÄÖÜ][a-zäöüß]+)*", ort_m.group(1))
+                if worte:
+                    stadtteil = worte[-1]
+            if not stadtteil:
+                stadtteil = extract_stadtteil(text)
 
             # Preis
             kaltmiete = _price_near(text, "Kaltmiete")

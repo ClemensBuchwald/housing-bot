@@ -41,6 +41,10 @@ Wenn etwas Wichtiges fehlt oder unklar ist, frag lieber kurz nach statt zu raten
 - Wenn sie wissen wollen, wonach du gerade suchst, ruf `aktuellen_auftrag_abrufen` \
 auf und erzähl es ihnen in eigenen Worten.
 - Wenn sie pausieren, fortsetzen oder abbrechen wollen, nutze die passenden Tools.
+- Wenn sie nach Kontakt/Ansprechpartner/Makler/Telefon zu einer Wohnung fragen, nutze \
+`kontaktdaten_recherchieren` mit der Inserats-URL oder -ID. Gib dann Ansprechpartner, Firma \
+und Kontaktweg an. Ist keine Telefonnummer hinterlegt, sag das ehrlich und verweise auf das \
+Kontaktformular im Inserat — erfinde NIE Telefonnummern oder E-Mail-Adressen.
 - Bei normalem Gespräch antworte einfach natürlich, ohne Tools.
 
 Sobald ein Auftrag aktiv ist, durchsuchst du im Hintergrund diese Quellen und meldest \
@@ -119,6 +123,27 @@ TOOLS = [
                     ),
                 },
             },
+        },
+    },
+    {
+        "name": "kontaktdaten_recherchieren",
+        "description": (
+            "Recherchiert die öffentlich im Inserat hinterlegten Anbieter-/Kontaktdaten "
+            "(Ansprechpartner, Firma, Telefon falls angegeben, Kontaktweg) zu einer konkreten "
+            "Wohnung. Nutze das, wenn der Nutzer nach Kontakt, Ansprechpartner, Makler, "
+            "Telefonnummer oder 'wen kann ich anrufen/anschreiben' fragt. "
+            "Übergib die Inserats-URL oder die ImmoScout24-ID. Funktioniert derzeit für "
+            "ImmoScout24-Inserate; bei anderen Portalen gib dem Nutzer den Inseratslink."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "listing_url_oder_id": {
+                    "type": "string",
+                    "description": "Inserats-URL (z.B. https://www.immobilienscout24.de/expose/170346126) oder die Scout-ID",
+                },
+            },
+            "required": ["listing_url_oder_id"],
         },
     },
     {
@@ -225,13 +250,16 @@ def build_sources_text(scraper_names: List[str]) -> str:
 
 
 class ConversationAgent:
-    def __init__(self, store: "Store", search_fn=None, notify_fn=None, sources_text: str = "") -> None:
+    def __init__(self, store: "Store", search_fn=None, notify_fn=None, sources_text: str = "",
+                 contact_fn=None) -> None:
         # search_fn(criteria: dict) -> List[dict]: optionale Live-Suchfunktion
         # notify_fn(chat_id: str, text: str): direkter Telegram-Versand (am KI-Text vorbei)
         # sources_text: menschenlesbare Liste der aktiven Quellen (für korrekte Auskunft)
+        # contact_fn(url_or_id: str) -> dict: Kontaktdaten-Recherche zum Inserat
         self.store = store
         self.search_fn = search_fn
         self.notify_fn = notify_fn
+        self.contact_fn = contact_fn
         self.sources_text = sources_text or "- (Quellen werden geladen)"
         self._histories: Dict[str, List[dict]] = {}
 
@@ -331,6 +359,17 @@ class ConversationAgent:
                 {"status": "aktiv", "auftrag": m["raw_text"], "details": m.get("structured", {})},
                 ensure_ascii=False,
             )
+
+        if name == "kontaktdaten_recherchieren":
+            if not self.contact_fn:
+                return json.dumps({"status": "nicht_verfuegbar"})
+            ref = str(args.get("listing_url_oder_id", "")).strip()
+            try:
+                info = self.contact_fn(ref)
+            except Exception as e:
+                logger.exception("Kontaktrecherche fehlgeschlagen: %s", e)
+                return json.dumps({"status": "fehler"})
+            return json.dumps({"status": "ok", "kontakt": info}, ensure_ascii=False)
 
         if name == "suche_pausieren":
             ok = self.store.set_mandate_state(chat_id, "paused")

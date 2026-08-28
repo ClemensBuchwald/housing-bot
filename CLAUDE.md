@@ -30,7 +30,7 @@ Du darfst NICHT ohne separate Freigabe:
 - Portale oder externe Dienste mit echten Credentials ansprechen
 - Datenbankmigrationen ausführen
 - Code außerhalb von docs/ und config/ ändern, außer es wurde ausdrücklich beauftragt
-- fleur-pa oder andere Repos berühren
+- andere Repos berühren (außer fleur-pa, wenn explizit beauftragt)
 
 ## Standardregel
 

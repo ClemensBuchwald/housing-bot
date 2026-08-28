@@ -41,6 +41,7 @@ from src.scrapers.gewobag import GewobagScraper
 from src.scrapers.immowelt import ImmoweltScraper
 from src.scrapers.inberlinwohnen import InBerlinWohnenScraper
 from src.scrapers.is24 import IS24Scraper
+from src.scrapers.is24_detail import enrich_listing, get_contact
 from src.scrapers.kleinanzeigen import KleinanzeigenScraper
 from src.scrapers.mock import MockScraper
 from src.scrapers.vonovia import VonoviaScraper
@@ -122,6 +123,11 @@ def run_one_off_search(criteria: dict, mandate: Optional[dict] = None,
             candidates.append(l)
 
     candidates = candidates[:12]  # KI-Budget begrenzen
+
+    # 1b) Detaildaten nachladen (Etage/Balkon/Keller/Aufzug/Beschreibung),
+    #     damit die KI Kriterien wie "kein Erdgeschoss" wirklich prüfen kann
+    enrich_candidates(candidates)
+
     logger.info("On-Demand: %d neue Kandidaten → KI-Bewertung", len(candidates))
 
     # 2) KI-Bewertung gegen den Auftrag
@@ -161,6 +167,24 @@ def run_one_off_search(criteria: dict, mandate: Optional[dict] = None,
     treffer.sort(key=lambda t: -t["score"])
     logger.info("On-Demand: %d passende Treffer nach KI-Bewertung", len(treffer))
     return treffer[:8]
+
+
+def enrich_candidates(listings: List[Listing]) -> int:
+    """Lädt Detaildaten nach (aktuell IS24): Etage, Balkon, Keller, Aufzug, Beschreibung.
+
+    Ohne diese Daten kann die KI Kriterien wie "kein Erdgeschoss" oder "Balkon"
+    nicht belastbar prüfen. Fehler sind unkritisch — Listing bleibt dann roh.
+    """
+    n = 0
+    for l in listings:
+        try:
+            if enrich_listing(l):
+                n += 1
+        except Exception:
+            logger.debug("Enrichment fehlgeschlagen für %s", l.id, exc_info=True)
+    if n:
+        logger.info("Detaildaten für %d/%d Inserate nachgeladen", n, len(listings))
+    return n
 
 
 def _criteria_to_text(c: dict) -> str:
@@ -204,6 +228,13 @@ def run_scraping_cycle(
             # Deduplizierung
             if store.is_known(listing.id, listing.portal):
                 continue
+
+            # Detaildaten nachladen (Etage/Balkon/Keller/Aufzug) — erst NACH der
+            # Dedup, damit nur für wirklich neue Inserate ein Extra-Request nötig ist
+            try:
+                enrich_listing(listing)
+            except Exception:
+                logger.debug("Enrichment fehlgeschlagen für %s", listing.id, exc_info=True)
 
             # Vollständige Daten persistieren
             store.save_listing(listing)
@@ -283,7 +314,8 @@ def main() -> None:
     # Sofort-Suche mit Store verbinden (Dedup + Persistenz der gezeigten Treffer)
     search_fn = None if args.mock else functools.partial(run_one_off_search, store=store)
     sources_text = build_sources_text([s.name for s in scrapers])
-    tg_handler = TelegramHandler(store, search_fn=search_fn, sources_text=sources_text)
+    tg_handler = TelegramHandler(store, search_fn=search_fn, sources_text=sources_text,
+                                 contact_fn=get_contact)
 
     logger.info(
         "Housing Bot gestartet. Scraper: %s. Mock: %s",

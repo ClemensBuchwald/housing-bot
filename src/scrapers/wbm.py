@@ -39,7 +39,9 @@ class WBMScraper(BaseScraper):
             return []
 
         soup = self.parse(resp.text)
-        cards = soup.select("article.immo-element")
+        # Nur echte Inserate — die Liste enthält auch Bezirks-Header ohne Detail-Link
+        cards = [c for c in soup.select("article.immo-element")
+                 if c.select_one("a[href*='/angebote/details/']")]
 
         if not cards:
             logger.warning("[%s] Keine article.immo-element gefunden auf %s", self.name, _SEARCH_URL)
@@ -66,13 +68,18 @@ class WBMScraper(BaseScraper):
             titel_el = card.select_one("h2, h3, .textWrap h2, .textWrap h3")
             titel = titel_el.get_text(strip=True) if titel_el else "WBM Wohnung"
 
-            # Adresse
-            addr_el = card.select_one(".address, .adresse, address, [class*='address']")
-            addr_text = addr_el.get_text(strip=True) if addr_el else ""
-            stadtteil = extract_stadtteil(titel + " " + addr_text)
-
             # Gesamten Text für Regex-Extraktion
             full_text = card.get_text(" ", strip=True)
+
+            # Adresse: CSS-Selektor greift nicht zuverlässig → zusätzlich per Regex
+            # aus dem Kartentext ziehen ("Pepitapromenade 13, 13587 Berlin")
+            addr_el = card.select_one(".address, .adresse, address, [class*='address']")
+            addr_text = addr_el.get_text(strip=True) if addr_el else ""
+            addr_m = re.search(r"([^,|]+\d+[A-Za-z]?,\s*(\d{5})\s*Berlin)", full_text)
+            if addr_m:
+                addr_text = (addr_text + " " + addr_m.group(1)).strip()
+            plz = addr_m.group(2) if addr_m else ""
+            stadtteil = extract_stadtteil(titel + " " + addr_text)
 
             # Warmmiete: "1.558,04 € Warmmiete" oder "Warmmiete 1.558,04 €"
             warmmiete = _price_near_label(full_text, "Warmmiete")
@@ -97,6 +104,8 @@ class WBMScraper(BaseScraper):
                 warmmiete=warmmiete,
                 flaeche=flaeche,
                 zimmer=zimmer,
+                # Adresse+PLZ in die Merkmale → geo.py wertet sie mit aus
+                merkmale=([f"PLZ:{plz}"] if plz else []) + ([f"Adresse:{addr_text}"] if addr_text else []),
                 gefunden_am=datetime.now(),
             )
         except Exception as e:

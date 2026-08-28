@@ -74,3 +74,20 @@ def test_score_nicht_bevorzugter_stadtteil():
 def test_halbe_zimmer_aufgerundet():
     l = _listing(zimmer=2.5)
     assert l.zimmer_gerundet == 3
+
+
+def test_geo_filter_nutzt_plz_aus_merkmalen():
+    """PLZ steckt bei mehreren Quellen nur in den Merkmalen — geo.py muss sie lesen."""
+    from src.scrapers.geo import in_zielgebiet
+    l = Listing(id="x", portal="wbm", url="https://wbm.de/x",
+                titel="2-Zimmer-Wohnung", stadt="Berlin",
+                merkmale=["PLZ:10623", "Adresse:Teststr. 1, 10623 Berlin"])
+    assert in_zielgebiet(l) is True
+
+
+def test_geo_filter_lehnt_fremde_plz_ab():
+    from src.scrapers.geo import in_zielgebiet
+    l = Listing(id="y", portal="wbm", url="https://wbm.de/y",
+                titel="2-Zimmer-Wohnung", stadt="Berlin",
+                merkmale=["PLZ:13055", "Adresse:Testweg 9, 13055 Berlin"])
+    assert in_zielgebiet(l) is False
