@@ -235,6 +235,7 @@ SOURCE_LABELS = {
     "is24": "ImmobilienScout24 (größtes Portal)",
     "immowelt": "Immowelt",
     "kleinanzeigen": "eBay Kleinanzeigen (private Anbieter + Makler)",
+    "charlotte": "Charlottenburger Baugenossenschaft (CHARLOTTE) — Genossenschaftswohnungen, Mitgliedschaft für die Bewerbung nötig",
 }
 
 

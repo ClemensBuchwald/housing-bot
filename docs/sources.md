@@ -23,6 +23,7 @@ Stand: 2026-06-05 · Zielgebiet: Charlottenburg, Wilmersdorf, Halensee, Grunewal
 | **Vonovia** (inkl. Deutsche Wohnen) | Privat | JSON-API | — | ort+PLZ |
 | **Immowelt** | Portal | Server-HTML | `[data-testid=cardmfe-container--test-id]` | Ortsteil+PLZ |
 | **Kleinanzeigen** | Portal (privat+Makler) | Server-HTML | `article.aditem` | PLZ |
+| **CHARLOTTE** (Charlottenburger Baugenossenschaft) | Genossenschaft | Server-HTML (TYPO3/tx_immobilie) | `div.immobilie-list` | Bezirk+PLZ |
 
 Hinweis Gewobag: Liste enthält auch Stellplätze/Gewerbe — diese werden gefiltert.
 Aktuell (Stand der Prüfung) 0 Wohnungen in CW, aber pollbar für künftige Angebote.
@@ -120,3 +121,20 @@ gewerblichen Anbieterdaten — keine Logins, keine privaten Daten Dritter.
 Verhindert, dass eine neu angebundene Quelle mit leerer Dedup den Chat mit
 hunderten Nachrichten flutet. Nicht gemeldete Treffer bleiben gespeichert und
 sind über „zeig mir alle" abrufbar.
+
+## Genossenschaft CHARLOTTE (2026-08 aufgenommen)
+
+`charlotte1907.de/wohnungsangebote/woechentliche-angebote` — die einzige geprüfte
+Genossenschaft mit Bestand im Zielgebiet **und** echtem Feed.
+
+- Korrekte Domain ist **charlotte1907.de** (das früher getestete `cbg-berlin.de`
+  gehörte ihnen nie — daher der damalige DNS-Fehler).
+- ~6.500 Wohnungen, Wohnanlagen u.a. in Charlottenburg, Charlottenburg-Nord, Wilmersdorf.
+- Vollständig server-gerendert, `robots.txt` erlaubt es (verbietet nur `/typo3conf/`).
+- Felder: Bezirk, Straße, PLZ, Etage, Zimmer, Wohnfläche, Ausstattung (inkl. Badewanne),
+  Gesamtmiete, frei ab.
+- **Kein Duplikat**: Genossenschaftswohnungen laufen nicht über IS24/Immowelt.
+- Aktualisierung wöchentlich (montags). Momentan 0 CW-Angebote — laut Historie
+  (4 von 8 Stichproben mit 1–3 CW-Inseraten) kommen sie regelmäßig.
+- **Wichtig**: Inserate sind „nur für Mitglieder" — die Bewerbung setzt eine
+  Mitgliedschaft voraus. Die Listings selbst sind öffentlich.

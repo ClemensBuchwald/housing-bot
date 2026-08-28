@@ -36,6 +36,7 @@ from src.models import Listing
 from src.notifications import NotificationService
 from src.agent import build_sources_text
 from src.scrapers.base import BaseScraper
+from src.scrapers.charlotte import CharlotteScraper
 from src.scrapers.degewo import DegewoScraper
 from src.scrapers.gesobau import GESOBAUScraper
 from src.scrapers.gewobag import GewobagScraper
@@ -67,6 +68,7 @@ def build_scrapers(use_mock: bool) -> List[BaseScraper]:
         ImmoweltScraper(),        # ~15 s, großes Portal (CW-Ortsteilsuche)
         VonoviaScraper(),         # ~11 s, Vonovia/Deutsche Wohnen (JSON-API)
         # --- Schnell, aber selten Treffer ---
+        CharlotteScraper(),       # ~2 s, Genossenschaft mit CW-Bestand (kein Portal-Duplikat)
         WBMScraper(),             # ~8 s
         GESOBAUScraper(),         # ~6 s
         GewobagScraper(),         # ~6 s
@@ -136,12 +138,13 @@ def run_one_off_search(criteria: dict, mandate: Optional[dict] = None,
     include_seen=True: zeigt ALLE passenden inkl. bereits gezeigter ("zeig mir nochmal alle").
     """
     scrapers: List[BaseScraper] = [
+        IS24Scraper(),
+        ImmoweltScraper(),
         VonoviaScraper(),
+        CharlotteScraper(),
         WBMScraper(),
         GESOBAUScraper(),
         GewobagScraper(),
-        IS24Scraper(),
-        ImmoweltScraper(),
         KleinanzeigenScraper(),
         InBerlinWohnenScraper(page_limit=4),
     ]
