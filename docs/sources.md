@@ -80,6 +80,18 @@ alle JS/Bot-Schutz, nur über die Playwright-Basis sinnvoll.
 | **Berliner Spar- u. Bauverein, WG Charlottenburg-Nord** | Genossenschaften ohne Live-Mietfeed → Bestandsquellen |
 | **Covivio** | Domain nicht auflösbar |
 
+## Geprüft 2026-08 — bewusst NICHT gebaut
+
+| Quelle | Befund (live verifiziert) |
+|--------|---------------------------|
+| **COTRAC** (Hausverwaltung) | Angebotsseite dauerhaft tot: 5× HTTP 500, auch über alle URL-Varianten; `robots.txt` verbietet `/de/page/angebote/` sogar ausdrücklich. Keine maschinenlesbare Liste irgendwo auf der Domain, Kundenportal ist login-only. Ihre Objekte laufen über **IS24** — dort haben wir das Inserat ja gefunden. |
+| **DB Wohnen** | Nur Info-Seiten; die Inserate kommen von einem Fremd-Widget (polyestate/AT Estate). Inhaltlich **DB-Mitarbeitenden vorbehalten**. Im Zielgebiet exakt **1** Objekt (Kurfürstendamm 72) — nachweislich identisch mit IS24-Expose 170316860. Der „Charlottenburg"-Hinweis betraf SMARTments = möbliert/auf Zeit (ausgeklammertes Segment). |
+| **TAG Wohnen** | Offene REST-API (`immo.isp-10130-1.domservice.de/properties`), technisch trivial scrapebar — aber **0 von 624** Wohnungen in Berlin. Portfolio liegt in Sachsen-Anhalt/Sachsen/Thüringen/Niedersachsen; „Berlin" steht nur mit `doc_count=0` in der Ortsauswahl. Syndiziert zudem an IS24 (49 von 93 Chemnitz-Objekten titelidentisch). Endpunkt dokumentiert, falls TAG je Berliner Bestand übernimmt. |
+
+Gemeinsames Muster: Alle drei enden bei **ImmoScout24**, das wir bereits direkt und
+vollständiger abfragen. Einzelne Hausverwaltungen und Konzern-Wohnportale sind für
+dieses Zielgebiet praktisch immer Duplikate.
+
 ## Optionaler Sonderkanal (vorgemerkt, nicht gebaut)
 
 - **Wohnen auf Zeit / Zwischenmiete**: bewusst getrennt von Dauerwohnungen.
