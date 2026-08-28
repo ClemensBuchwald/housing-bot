@@ -14,6 +14,7 @@ import argparse
 import functools
 import logging
 import os
+import re
 import threading
 import time
 from typing import List
@@ -79,8 +80,38 @@ def build_scrapers(use_mock: bool) -> List[BaseScraper]:
     ]
 
 
+# Angebotsarten, die bei einer Dauermiet-Suche nie passen. Sie machen einen
+# erheblichen Teil der Rohtreffer aus (gemessen: 14% Tauschwohnungen) und wurden
+# bisher teuer von der KI aussortiert.
+_IMMER_AUSGESCHLOSSEN = [
+    "tauschwohnung", "wohnungstausch", "tausche wohnung", "tausch gegen",
+    "zwischenmiete", "auf zeit",
+]
+
+# "möbliert" darf NICHT blind blocken — es steckt auch in "unmöbliert",
+# und genau das ist ja gewünscht. Daher negative Vorprüfung.
+_MOEBLIERT_RE = re.compile(r"(?<!un)(?<!nicht )m[öo]bliert", re.IGNORECASE)
+
+
+def _hat_ausschlusswort(listing: Listing, crit: dict) -> Optional[str]:
+    """Prüft Titel + Merkmale gegen Ausschlusswörter. Gibt das Treffer-Wort zurück."""
+    text = (listing.titel or "").lower() + " " + " ".join(str(m) for m in (listing.merkmale or [])).lower()
+    for w in _IMMER_AUSGESCHLOSSEN + [str(w).lower() for w in (crit.get("ausschlusskriterien") or [])]:
+        if w and w in text:
+            return w
+    if _MOEBLIERT_RE.search(text) and "unmöbliert" not in text and "unmobliert" not in text:
+        return "möbliert"
+    return None
+
+
 def _passes_basic(listing: Listing, crit: dict) -> bool:
-    """Leichter Filter für On-Demand-Abfragen (ohne KI, nur harte Kriterien)."""
+    """Regelbasierter Vorfilter — läuft VOR der KI und kostet nichts.
+
+    Prüft harte Zahlen (Preis/Zimmer/Fläche) und Ausschlusswörter. Fehlende
+    Werte führen NICHT zur Ablehnung — im Zweifel entscheidet die KI.
+    """
+    if _hat_ausschlusswort(listing, crit):
+        return False
     preis = listing.warmmiete or listing.kaltmiete
     limit = crit.get("warmmiete_max") or crit.get("kaltmiete_max")
     if preis and limit and preis > float(limit):

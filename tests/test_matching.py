@@ -138,3 +138,26 @@ def test_merkmale_kurz_kuerzt_beschreibung_behaelt_fakten():
     out = _merkmale_kurz(m)
     assert "Etage:4 von 6" in out and "Balkon/Terrasse" in out and "PLZ:10719" in out
     assert len(out) < 600           # Beschreibung wurde gekappt
+
+
+def test_vorfilter_blockt_tauschwohnung_und_moebliert():
+    """Tausch/möbliert/Zwischenmiete duerfen die KI nicht erreichen (Kosten + falsch)."""
+    from src.main import _passes_basic
+    krit = {"warmmiete_max": 3000, "zimmer_min": 3, "flaeche_min": 85,
+            "ausschlusskriterien": ["Tauschwohnung"]}
+    for titel in ["TAUSCHWOHNUNG Berlin, Charlottenburg",
+                  "Möblierte Wohnung auf Zeit in Wilmersdorf",
+                  "Zwischenmiete 3 Zimmer Halensee"]:
+        l = Listing(id="x", portal="is24", url="u", titel=titel, stadt="Berlin",
+                    zimmer=3.0, flaeche=90.0, warmmiete=2000.0)
+        assert _passes_basic(l, krit) is False, titel
+
+
+def test_vorfilter_laesst_unmoebliert_durch():
+    """'möbliert' steckt in 'unmöbliert' — das darf NICHT blockiert werden."""
+    from src.main import _passes_basic
+    krit = {"warmmiete_max": 3000, "zimmer_min": 3, "flaeche_min": 85}
+    l = Listing(id="y", portal="is24", url="u",
+                titel="Schöne 3-Zimmer-Wohnung mit Balkon, unmöbliert", stadt="Berlin",
+                zimmer=3.0, flaeche=95.0, warmmiete=1900.0)
+    assert _passes_basic(l, krit) is True
