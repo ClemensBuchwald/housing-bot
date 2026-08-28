@@ -80,10 +80,6 @@ alle JS/Bot-Schutz, nur über die Playwright-Basis sinnvoll.
 | **Berliner Spar- u. Bauverein, WG Charlottenburg-Nord** | Genossenschaften ohne Live-Mietfeed → Bestandsquellen |
 | **Covivio** | Domain nicht auflösbar |
 
-Infra: Dockerfile installiert Chromium (`playwright install --with-deps chromium`,
-~400 MB), compose setzt `shm_size: 1gb`. Lazy-Import: fehlt Playwright, werden
-JS-Quellen sauber übersprungen, HTML-Quellen laufen normal weiter.
-
 ## Optionaler Sonderkanal (vorgemerkt, nicht gebaut)
 
 - **Wohnen auf Zeit / Zwischenmiete**: bewusst getrennt von Dauerwohnungen.
