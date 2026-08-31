@@ -486,3 +486,46 @@ def test_leeres_ergebnis_ist_kein_fehler():
 
         assert health.schnappschuss()["zyklus"]["quellen_fehler"] == 0
         store.close()
+
+
+# --- Zugangsdaten dürfen nicht in Logs landen -------------------------------
+
+def test_telegram_token_wird_aus_logs_entfernt():
+    """httpx protokolliert die volle URL — bei Telegram steht der Token im Pfad.
+    Ohne Filter liegt er im Klartext in den Container-Logs."""
+    import logging as _logging
+    f = M._GeheimnisFilter()
+    satz = ("HTTP Request: GET https://api.telegram.org/"
+            "bot8897458081:AAE3QMIanA1opiHE0AXVWJoIUNAP1uk8T9E/getUpdates \"200 OK\"")
+    record = _logging.LogRecord("httpx", _logging.INFO, "x", 1, satz, None, None)
+    f.filter(record)
+    assert "AAE3QMIanA1opiHE0AXVWJoIUNAP1uk8T9E" not in record.getMessage()
+    assert "entfernt" in record.getMessage()
+    assert "api.telegram.org" in record.getMessage(), "die URL bleibt nachvollziehbar"
+
+
+def test_anthropic_schluessel_wird_aus_logs_entfernt():
+    import logging as _logging
+    f = M._GeheimnisFilter()
+    record = _logging.LogRecord("x", _logging.ERROR, "x", 1,
+                                "Fehler mit sk-ant-api03-AbCdEfGhIjKlMnOp", None, None)
+    f.filter(record)
+    assert "AbCdEfGhIjKlMnOp" not in record.getMessage()
+
+
+def test_filter_laesst_normale_zeilen_unveraendert():
+    import logging as _logging
+    f = M._GeheimnisFilter()
+    record = _logging.LogRecord("x", _logging.INFO, "x", 1,
+                                "150 Inserate von %s", ("is24",), None)
+    f.filter(record)
+    assert record.getMessage() == "150 Inserate von is24"
+
+
+def test_filter_haengt_an_der_wurzel():
+    """Damit er unabhaengig von der erzeugenden Bibliothek wirkt."""
+    import logging as _logging
+    wurzel = _logging.getLogger()
+    assert any(isinstance(fl, M._GeheimnisFilter)
+               for h in wurzel.handlers for fl in h.filters), \
+        "der Filter muss an den Wurzel-Handlern haengen"

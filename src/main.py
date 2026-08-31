@@ -31,6 +31,42 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+
+class _GeheimnisFilter(logging.Filter):
+    """Entfernt Zugangsdaten aus Logzeilen.
+
+    httpx protokolliert jede Anfrage-URL auf INFO-Ebene. Bei der Telegram-API
+    steht der Bot-Token im PFAD der URL — er landete damit im Klartext in den
+    Container-Logs, die jeder mit Docker-Zugriff lesen kann und die in jedem
+    Logsammler weiterleben.
+
+    Der Filter greift an der Wurzel, damit er unabhängig davon wirkt, welche
+    Bibliothek die Zeile erzeugt hat.
+    """
+
+    _MUSTER = (
+        re.compile(r"bot\d{6,}:[A-Za-z0-9_-]{20,}"),      # Telegram
+        re.compile(r"sk-ant-[A-Za-z0-9_-]{10,}"),         # Anthropic
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            nachricht = record.getMessage()
+        except Exception:
+            return True
+        bereinigt = nachricht
+        for muster in self._MUSTER:
+            bereinigt = muster.sub(lambda m: m.group(0)[:8] + "…<entfernt>", bereinigt)
+        if bereinigt != nachricht:
+            record.msg = bereinigt
+            record.args = ()
+        return True
+
+
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_GeheimnisFilter())
+
 logger = logging.getLogger("housing_bot")
 
 from src.config import load_criteria
