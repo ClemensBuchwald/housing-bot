@@ -529,3 +529,110 @@ def test_filter_haengt_an_der_wurzel():
     assert any(isinstance(fl, M._GeheimnisFilter)
                for h in wurzel.handlers for fl in h.filters), \
         "der Filter muss an den Wurzel-Handlern haengen"
+
+
+def test_stiller_scraper_ausfall_wird_als_stoerung_gezaehlt():
+    """degewo verliert bei Zeitueberschreitungen alle Abrufe und gibt [] zurueck.
+    Ohne diesen Zaehler sieht ein totes Portal aus wie ein ruhiger Markt."""
+    from src.scrapers.base import BaseScraper
+    from tests.test_silent_failure import FakeNotifier, _budgets_frei, _mandate
+    from tests.fakes import FakeProvider, benutze_provider
+
+    class TotesPortal(BaseScraper):
+        name = "degewo"
+
+        def fetch_listings(self, criteria):
+            self._abruf_fehler = 3        # wie nach drei erschoepften Versuchen
+            return []
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(Path(d) / "t.db")
+        health = Health(Path(d) / "health.json", schreib_intervall_s=0)
+        _budgets_frei()
+        with benutze_provider(FakeProvider([])):
+            M.run_scraping_cycle([TotesPortal()], store, FakeNotifier(), _mandate(), health)
+
+        assert health.schnappschuss()["zyklus"]["quellen_fehler"] == 1
+        store.close()
+
+
+def test_ruhiger_markt_ist_keine_stoerung():
+    from src.scrapers.base import BaseScraper
+    from tests.test_silent_failure import FakeNotifier, _budgets_frei, _mandate
+    from tests.fakes import FakeProvider, benutze_provider
+
+    class LeeresPortal(BaseScraper):
+        name = "wbm"
+
+        def fetch_listings(self, criteria):
+            return []                     # sauber abgerufen, nur nichts im Angebot
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(Path(d) / "t.db")
+        health = Health(Path(d) / "health.json", schreib_intervall_s=0)
+        _budgets_frei()
+        with benutze_provider(FakeProvider([])):
+            M.run_scraping_cycle([LeeresPortal()], store, FakeNotifier(), _mandate(), health)
+
+        assert health.schnappschuss()["zyklus"]["quellen_fehler"] == 0
+        store.close()
+
+
+def test_abrufzaehler_wird_je_zyklus_zurueckgesetzt():
+    from src.scrapers.base import BaseScraper
+
+    class Portal(BaseScraper):
+        name = "x"
+
+        def fetch_listings(self, criteria):
+            return []
+
+    p = Portal()
+    assert p.hatte_abruf_fehler is False
+    p._abruf_fehler = 2
+    assert p.hatte_abruf_fehler is True
+    p.abrufe_zuruecksetzen()
+    assert p.hatte_abruf_fehler is False
+
+
+def test_zaehler_ist_nicht_zwischen_instanzen_geteilt():
+    """Klassenattribut als Vorgabe — die Zuweisung muss instanzlokal wirken."""
+    from src.scrapers.base import BaseScraper
+
+    class Portal(BaseScraper):
+        name = "x"
+
+        def fetch_listings(self, criteria):
+            return []
+
+    a, b = Portal(), Portal()
+    a._abruf_fehler = 5
+    assert b.hatte_abruf_fehler is False, "ein Ausfall darf nicht auf andere abfaerben"
+
+
+def test_teilausfall_mit_treffern_gilt_nicht_als_totalausfall():
+    """Eine Quelle, die trotz eines fehlgeschlagenen Abrufs Inserate liefert,
+    ist nicht ausgefallen."""
+    from src.models import Listing as _L
+    from src.scrapers.base import BaseScraper
+    from tests.test_silent_failure import FakeNotifier, _budgets_frei, _mandate
+    from tests.fakes import FakeProvider, benutze_provider, bewertung
+
+    class Teilweise(BaseScraper):
+        name = "is24"
+
+        def fetch_listings(self, criteria):
+            self._abruf_fehler = 1        # Seite 3 von 6 ging verloren
+            return [_L(id="a", portal="is24", url="u", titel="W", stadt="Berlin",
+                       stadtteil="Charlottenburg", warmmiete=1200.0, flaeche=70.0, zimmer=2.0)]
+
+    with tempfile.TemporaryDirectory() as d:
+        store = Store(Path(d) / "t.db")
+        health = Health(Path(d) / "health.json", schreib_intervall_s=0)
+        _budgets_frei()
+        with benutze_provider(FakeProvider([bewertung(passt=False, score=10)])), \
+             patch.object(M, "enrich_listing", lambda l: False):
+            M.run_scraping_cycle([Teilweise()], store, FakeNotifier(), _mandate(), health)
+
+        assert health.schnappschuss()["zyklus"]["quellen_fehler"] == 0
+        store.close()

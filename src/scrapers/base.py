@@ -31,6 +31,26 @@ DEFAULT_HEADERS = {
 class BaseScraper(ABC):
     name: str = "base"
 
+    # Fehlgeschlagene Abrufe seit dem letzten Zurücksetzen.
+    #
+    # Hintergrund: get() gibt bei erschöpften Versuchen None zurück, und die
+    # Scraper machen daraus eine leere Liste. Von aussen sah ein totes Portal
+    # damit exakt aus wie ein ruhiger Markt. Der Zähler macht den Unterschied
+    # sichtbar, ohne dass ein Scraper angefasst werden muss.
+    #
+    # Als Klassenattribut angelegt, damit Unterklassen mit eigenem __init__
+    # (z. B. InBerlinWohnenScraper) nichts aufrufen müssen; die Zuweisung in
+    # get() erzeugt dann das Instanzattribut.
+    _abruf_fehler: int = 0
+
+    def abrufe_zuruecksetzen(self) -> None:
+        """Vor jedem Zyklus aufrufen."""
+        self._abruf_fehler = 0
+
+    @property
+    def hatte_abruf_fehler(self) -> bool:
+        return self._abruf_fehler > 0
+
     @abstractmethod
     def fetch_listings(self, criteria: Criteria) -> List[Listing]:
         """Fetch raw listings from the portal. Must be implemented per portal."""
@@ -66,6 +86,7 @@ class BaseScraper(ABC):
                 if attempt < retries:
                     time.sleep(2 ** attempt)
         logger.error("[%s] Kein Response nach %d Versuchen: %s", self.name, retries, url)
+        self._abruf_fehler = self._abruf_fehler + 1
         return None
 
     def parse(self, html: str) -> BeautifulSoup:

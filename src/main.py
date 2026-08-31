@@ -593,6 +593,8 @@ def run_scraping_cycle(
         if evaluated >= MAX_EVAL_PRO_ZYKLUS:
             break
         logger.info("Scraper %s …", scraper.name)
+        if hasattr(scraper, "abrufe_zuruecksetzen"):
+            scraper.abrufe_zuruecksetzen()
         try:
             listings: List[Listing] = scraper.fetch_listings(criteria)
         except Exception:
@@ -602,6 +604,15 @@ def run_scraping_cycle(
             quellen_fehler += 1
             logger.exception("Fehler bei Scraper %s", scraper.name)
             continue
+
+        # Der häufigere Fall: Der Scraper wirft gar nicht, sondern verliert
+        # seine Abrufe still und gibt eine leere Liste zurück (so verhält sich
+        # degewo bei Zeitüberschreitungen). Nach aussen war das bisher
+        # ununterscheidbar von "aktuell gibt es nichts".
+        if not listings and getattr(scraper, "hatte_abruf_fehler", False):
+            quellen_fehler += 1
+            logger.warning("[%s] 0 Inserate NACH fehlgeschlagenen Abrufen — "
+                           "technischer Ausfall, kein leeres Ergebnis", scraper.name)
 
         inserate_gesamt += len(listings)
         logger.info("%d Inserate von %s", len(listings), scraper.name)
