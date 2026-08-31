@@ -1,7 +1,30 @@
 # Secrets
 .env
+.env.*
+.env.bak-*
+.env.pre-*
+.env.local
+.env.backup
+*.env
+!.env.example
 *.key
 *.pem
+*.p12
+*.pfx
+secrets/
+*secret*.yaml
+*secret*.yml
+*credentials*.json
+
+# Lokale Secret-/Konfig-Backups (Key-Rotation, manuelle Kopien)
+*.bak
+*.bak-*
+*.orig
+*.pre-rotate
+*-backup/
+*-backup-*/
+backup/
+backups/
 
 # Datenbank
 data/
