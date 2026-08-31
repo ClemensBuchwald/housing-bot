@@ -21,7 +21,7 @@ def test_schnellspur_nur_schnelle_quellen():
     laeufe = []
     stop = threading.Event()
 
-    def fake_cycle(scrapers, store, notifier, mandate):
+    def fake_cycle(scrapers, store, notifier, mandate, health=None):
         laeufe.append([s.name for s in scrapers])
         if len(laeufe) >= 11:
             stop.set()
@@ -47,7 +47,7 @@ def test_schnellspur_aus_wenn_intervall_gleich():
     laeufe = []
     stop = threading.Event()
 
-    def fake_cycle(scrapers, store, notifier, mandate):
+    def fake_cycle(scrapers, store, notifier, mandate, health=None):
         laeufe.append(len(scrapers))
         if len(laeufe) >= 3:
             stop.set()

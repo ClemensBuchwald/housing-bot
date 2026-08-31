@@ -14,9 +14,14 @@ services:
       # Quellcode gemountet: nach git pull reicht 'docker compose restart' (kein Rebuild)
       - ./src:/app/src:ro
     healthcheck:
-      # Einfacher Check: Prozess läuft und data/-Verzeichnis ist schreibbar
-      test: ["CMD", "python", "-c", "import os; os.makedirs('/app/data', exist_ok=True)"]
+      # Prüft Threads, Herzschläge, Datenbank und Modellzustand über data/health.json.
+      # Der alte Check legte nur /app/data an — er war selbst dann noch grün, wenn
+      # der Scraping-Thread längst gestorben war. Es wird kein Modell angerufen.
+      # degraded (gestörter Anbieter, angestaute Warteschlange) bleibt exit 0:
+      # ein Neustart würde die Störung nicht beheben, aber den Verlauf abreißen.
+      test: ["CMD", "python", "-m", "src.healthcheck"]
       interval: 60s
-      timeout: 5s
+      timeout: 10s
       retries: 3
-      start_period: 10s
+      # Grosszügig: Der erste vollständige Zyklus mit allen Quellen dauert Minuten.
+      start_period: 90s

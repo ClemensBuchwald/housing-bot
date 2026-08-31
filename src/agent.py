@@ -12,19 +12,29 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-from typing import TYPE_CHECKING, Dict, List
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-import anthropic
+from src.llm import get_provider
 
 if TYPE_CHECKING:
     from src.store import Store
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-haiku-4-5"
 _MAX_HISTORY = 24  # letzte N Nachrichten pro Chat behalten
+_MAX_TOOL_RUNDEN = 5
+
+# Was der Nutzer erfahren muss, wenn die Aktion vollzogen ist, die Antwort des
+# Modells darüber aber verloren ging. Der Bot darf weder eine nicht ausgeführte
+# Aktion behaupten noch eine ausgeführte verschweigen.
+_AKTION_TEXT = {
+    "suchauftrag_speichern": "Dein Suchauftrag ist gespeichert — die Suche läuft ab jetzt.",
+    "suche_pausieren": "Die Suche ist pausiert.",
+    "suche_fortsetzen": "Die Suche läuft wieder.",
+    "suche_stoppen": "Die Suche ist gestoppt.",
+    "jetzt_angebote_suchen": "Die Sofort-Suche ist durchgelaufen; die Treffer stehen oben im Chat.",
+}
 
 _SYSTEM_PROMPT = """\
 Du bist der Housing-Bot — ein freundlicher, natürlicher Wohnungssuch-Assistent für \
@@ -217,13 +227,6 @@ def format_treffer_block(t: dict) -> str:
     return "\n".join(lines)
 
 
-def _client() -> anthropic.Anthropic:
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY fehlt in .env")
-    return anthropic.Anthropic(api_key=api_key)
-
-
 # Menschenlesbare Beschreibung je Scraper-Name (für die Quellen-Auskunft des Bots)
 SOURCE_LABELS = {
     "inberlinwohnen": "Berliner landeseigene Gesellschaften (degewo, GESOBAU, Gewobag, HOWOGE, STADT UND LAND, WBM) über inberlinwohnen.de",
@@ -278,11 +281,16 @@ class ConversationAgent:
         self._trim(history)
         self._persist(chat_id, "user", text)
 
+        # Was während dieses Zuges TATSÄCHLICH vollzogen wurde. Entscheidend für
+        # den Fehlerfall: Bricht das Modell ab, nachdem ein Werkzeug bereits
+        # gelaufen ist, ist die Aktion trotzdem passiert — der Nutzer darf dann
+        # kein pauschales "hat nicht geklappt" bekommen.
+        ausgefuehrt: List[str] = []
         try:
-            reply = self._run(chat_id, history)
+            reply = self._run(chat_id, history, ausgefuehrt)
         except Exception as e:
             logger.exception("Agent-Fehler: %s", e)
-            return "Ups, da ist gerade etwas schiefgelaufen. Magst du es nochmal versuchen?"
+            reply = self._fehler_text(ausgefuehrt)
 
         history.append({"role": "assistant", "content": reply})
         self._trim(history)
@@ -295,41 +303,81 @@ class ConversationAgent:
         except Exception:
             logger.debug("Chat-Persistenz fehlgeschlagen", exc_info=True)
 
-    def _run(self, chat_id: str, history: List[dict]) -> str:
-        client = _client()
+    def _fehler_text(self, ausgefuehrt: List[str]) -> str:
+        """Ehrliche Antwort nach einem Abbruch — abhängig davon, was schon geschah."""
+        if not ausgefuehrt:
+            return "Ups, da ist gerade etwas schiefgelaufen. Magst du es nochmal versuchen?"
+        zeilen = [_AKTION_TEXT.get(a, f"Aktion „{a}“ wurde ausgeführt.") for a in ausgefuehrt]
+        zeilen.append("Meine Antwort dazu ist leider abgebrochen — die Aktion selbst hat aber geklappt.")
+        return "\n".join(zeilen)
+
+    def _abgeschnitten_text(self, ausgefuehrt: List[str]) -> str:
+        """Antwort lief ins Token-Limit.
+
+        Der angefangene Text darf NICHT ausgeliefert werden: Er endet oft mitten
+        in einer Ankündigung ("Ich speichere dir das gleich ab …"), für die nie
+        ein Werkzeugaufruf kam. Genau daraus entstünde die Behauptung einer
+        Aktion, die nie stattgefunden hat.
+        """
+        if ausgefuehrt:
+            zeilen = [_AKTION_TEXT.get(a, f"Aktion „{a}“ wurde ausgeführt.") for a in ausgefuehrt]
+            zeilen.append("Meine Erklärung dazu wurde abgeschnitten — frag gern nochmal nach.")
+            return "\n".join(zeilen)
+        return ("Meine Antwort wurde leider abgeschnitten, bevor ich fertig war — "
+                "und ich habe dabei nichts gespeichert oder geändert. "
+                "Magst du es nochmal versuchen, am besten etwas kürzer gefasst?")
+
+    def _run(self, chat_id: str, history: List[dict], ausgefuehrt: List[str]) -> str:
+        provider = get_provider()
         # Lokale Kopie für die Tool-Use-Schleife (mit rohen Content-Blöcken)
         messages: List[dict] = [{"role": m["role"], "content": m["content"]} for m in history]
 
-        for _ in range(5):  # max. 5 Tool-Runden
-            resp = client.messages.create(
-                model=_MODEL,
-                max_tokens=1024,
+        for _ in range(_MAX_TOOL_RUNDEN):
+            result = provider.complete(
+                messages=messages,
                 system=_SYSTEM_PROMPT.format(quellen=self.sources_text),
                 tools=TOOLS,
-                messages=messages,
+                max_tokens=1024,
             )
 
-            if resp.stop_reason == "tool_use":
-                messages.append({"role": "assistant", "content": resp.content})
+            if result.stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": result.raw_content})
                 results = []
-                for block in resp.content:
-                    if block.type == "tool_use":
-                        logger.info("[%s] Tool: %s(%s)", chat_id, block.name, block.input)
-                        out = self._exec_tool(chat_id, block.name, block.input)
-                        results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": out,
-                        })
+                for call in result.tool_calls:
+                    logger.info("[%s] Tool: %s(%s)", chat_id, call.name, call.input)
+                    out, vollzogen = self._exec_tool(chat_id, call.name, call.input)
+                    if vollzogen:
+                        ausgefuehrt.append(vollzogen)
+                    results.append({
+                        "type": "tool_result",
+                        "tool_use_id": call.id,
+                        "content": out,
+                    })
                 messages.append({"role": "user", "content": results})
                 continue
 
-            text = "".join(b.text for b in resp.content if b.type == "text").strip()
-            return text or "Ok!"
+            if result.stop_reason == "max_tokens":
+                logger.warning("[%s] Antwort am Token-Limit abgeschnitten", chat_id)
+                return self._abgeschnitten_text(ausgefuehrt)
 
-        return "Ok!"
+            text = result.text.strip()
+            if text:
+                return text
+            # Leerer Abschluss ohne Werkzeugaufruf: lieber ehrlich sein als "Ok!"
+            return self._abgeschnitten_text(ausgefuehrt) if ausgefuehrt else \
+                "Da habe ich gerade keine Antwort zustande gebracht — magst du es nochmal versuchen?"
 
-    def _exec_tool(self, chat_id: str, name: str, args: dict) -> str:
+        logger.warning("[%s] Werkzeug-Schleife nach %d Runden beendet", chat_id, _MAX_TOOL_RUNDEN)
+        return self._fehler_text(ausgefuehrt) if ausgefuehrt else \
+            "Das hat gerade zu viele Zwischenschritte gebraucht — magst du es nochmal versuchen?"
+
+    def _exec_tool(self, chat_id: str, name: str, args: dict) -> Tuple[str, Optional[str]]:
+        """Führt ein Werkzeug aus.
+
+        Rückgabe: (Ergebnis für das Modell, tatsächlich vollzogene Aktion oder None).
+        Der zweite Wert ist nur gesetzt, wenn wirklich etwas passiert ist — er
+        trägt die Wahrheit, falls das Modell danach ausfällt.
+        """
         if name == "suchauftrag_speichern":
             structured = {
                 "zielorte": args.get("zielorte", []),
@@ -347,46 +395,47 @@ class ConversationAgent:
             return json.dumps(
                 {"status": "gespeichert", "id": mandate_id, "details": structured},
                 ensure_ascii=False,
-            )
+            ), "suchauftrag_speichern"
 
         if name == "aktuellen_auftrag_abrufen":
             m = self.store.get_active_mandate(chat_id)
             if not m:
-                p = self._paused(chat_id)
+                p = self.store.get_paused_mandate(chat_id)
                 if p:
-                    return json.dumps({"status": "pausiert", "auftrag": p["raw_text"]}, ensure_ascii=False)
-                return json.dumps({"status": "kein_auftrag"})
+                    return json.dumps({"status": "pausiert", "auftrag": p["raw_text"]},
+                                      ensure_ascii=False), None
+                return json.dumps({"status": "kein_auftrag"}), None
             return json.dumps(
                 {"status": "aktiv", "auftrag": m["raw_text"], "details": m.get("structured", {})},
                 ensure_ascii=False,
-            )
+            ), None
 
         if name == "kontaktdaten_recherchieren":
             if not self.contact_fn:
-                return json.dumps({"status": "nicht_verfuegbar"})
+                return json.dumps({"status": "nicht_verfuegbar"}), None
             ref = str(args.get("listing_url_oder_id", "")).strip()
             try:
                 info = self.contact_fn(ref)
             except Exception as e:
                 logger.exception("Kontaktrecherche fehlgeschlagen: %s", e)
-                return json.dumps({"status": "fehler"})
-            return json.dumps({"status": "ok", "kontakt": info}, ensure_ascii=False)
+                return json.dumps({"status": "fehler"}), None
+            return json.dumps({"status": "ok", "kontakt": info}, ensure_ascii=False), None
 
         if name == "suche_pausieren":
             ok = self.store.set_mandate_state(chat_id, "paused")
-            return "pausiert" if ok else "kein_aktiver_auftrag"
+            return ("pausiert", "suche_pausieren") if ok else ("kein_aktiver_auftrag", None)
 
         if name == "suche_fortsetzen":
             ok = self.store.set_mandate_state(chat_id, "active")
-            return "fortgesetzt" if ok else "kein_pausierter_auftrag"
+            return ("fortgesetzt", "suche_fortsetzen") if ok else ("kein_pausierter_auftrag", None)
 
         if name == "suche_stoppen":
             ok = self.store.set_mandate_state(chat_id, "stopped")
-            return "gestoppt" if ok else "kein_aktiver_auftrag"
+            return ("gestoppt", "suche_stoppen") if ok else ("kein_aktiver_auftrag", None)
 
         if name == "jetzt_angebote_suchen":
             if not self.search_fn:
-                return json.dumps({"status": "nicht_verfuegbar"})
+                return json.dumps({"status": "nicht_verfuegbar"}), None
             include_seen = bool(args.get("auch_bereits_gesehene", False))
             criteria = {k: v for k, v in args.items()
                         if v is not None and k != "auch_bereits_gesehene"}
@@ -396,25 +445,21 @@ class ConversationAgent:
                 treffer = self.search_fn(criteria, mandate, include_seen=include_seen)
             except Exception as e:
                 logger.exception("On-Demand-Suche fehlgeschlagen: %s", e)
-                return json.dumps({"status": "fehler"})
+                return json.dumps({"status": "fehler"}), None
 
             # Treffer DIREKT als feste Blöcke senden (am KI-Fließtext vorbei),
             # damit jeder Link klickbar bleibt und nie untergeht.
+            gesendet = 0
             if treffer and self.notify_fn:
                 for t in treffer:
                     self.notify_fn(chat_id, format_treffer_block(t))
+                    gesendet += 1
 
             # Claude bekommt nur die Anzahl zurück → kurze Begleitnachricht, keine Link-Wiedergabe
-            return json.dumps({"status": "gesendet", "anzahl": len(treffer)}, ensure_ascii=False)
+            return json.dumps({"status": "gesendet", "anzahl": len(treffer)},
+                              ensure_ascii=False), ("jetzt_angebote_suchen" if gesendet else None)
 
-        return "unbekanntes_tool"
-
-    def _paused(self, chat_id: str) -> dict | None:
-        row = self.store._conn.execute(
-            "SELECT * FROM mandates WHERE chat_id = ? AND state = 'paused' ORDER BY id DESC LIMIT 1",
-            (chat_id,),
-        ).fetchone()
-        return dict(row) if row else None
+        return "unbekanntes_tool", None
 
     def _trim(self, history: List[dict]) -> None:
         if len(history) > _MAX_HISTORY:
